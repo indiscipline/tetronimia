@@ -17,7 +17,7 @@ type
   
   ## A pile of fallen blocks, bottom to top
   Pile = object
-    rows: SinglyLinkedList[array[FieldSize.w, bool]]
+    rows: SinglyLinkedList[array[FieldSize.w, Cell]]
     height: int
 
   Stats = tuple[cleared, score, level: int]
@@ -26,9 +26,8 @@ type
     ui: UI
     tetros: iterator(): Tetronimo
     pile: Pile
-    curT, nextT: Tetronimo
+    curT, nextT, ghostT: Tetronimo
     paused: bool
-    roundTime: int
     stats: Stats
   
   MessageKind = enum
@@ -50,6 +49,7 @@ type
     descendPeriod {.guard: lock.}: int
     speedCurve: SpeedCurveKind
     hardDrop: bool
+    ghost: bool 
 
 var
   bus = newChannel[Message]()
@@ -82,11 +82,17 @@ const
     "speedcurve": "Select how the speed changes on level advancement\n" &
                   "n - Default 'Nimia' mode\n" &
                   "w - Famous 'World' mode",
-    "nohdrop": "Disable the hard drop"
+    "nohdrop": "Disable the hard drop",
+    "noghost": "Disable the ghost Tetronimo"
+  }
+  ShortStr = {
+    "speedcurve": 's',
+    "nohDrop": 'D',
+    "noGhost": 'G'
   }
 
 ###############################################################################
-func tCells(tk: TetronimoKind, rotation: int): TCells =
+func tCells(tk: TetronimoKind; rotation: int): TCells =
   # Why can't `LT[tk.ord][rotation]` just do it for me?
   case tk:
     of TO: LT.rTO[rotation]
@@ -124,7 +130,7 @@ func `+`(pos: Coord, offsets: TCells): TCells {.inline.} =
     result[i] = (x: offsets[i].x + pos.x, y: offsets[i].y + pos.y)
 
 ###############################################################################
-func getUnsafe[T](l: SinglyLinkedList[T], n: Natural): SinglyLinkedNode[T] =
+func getUnsafe[T](l: SinglyLinkedList[T]; n: Natural): SinglyLinkedNode[T] =
   ## Gets Nth row of the list unsafely, `n` must be valid!
   result = l.head
   var row = 0
@@ -136,18 +142,18 @@ func get(p: Pile; pos: Coord): bool =
   ## Check if the cell is in the Pile, coordinates relative to the field
   ## Relies on `p.height` for iteration: must be valid!
   let y = FieldSize.h - (pos.y + 1) # invert vertical coord
-  y < p.height and p.rows.getUnsafe(y).value[pos.x] # short-circuits, do not reorder!
+  y < p.height and (p.rows.getUnsafe(y).value[pos.x] != cEmpty) # short-circuits, do not reorder!
 
 proc setUnsafe(p: Pile; pileCell: Coord) {.inline.} =
-  ## Sets a cell to `true`, coordinates relative to the pile
+  ## Occupies a cell in the pile, coordinates relative to the pile
   ## Unsafely iterates the pile. `pileCell.y` must be valid!
-  p.rows.getUnsafe(pileCell.y).value[pileCell.x] = true
+  p.rows.getUnsafe(pileCell.y).value[pileCell.x] = cPile
 
-proc add(p: var Pile, cells: TCells) =
+proc add(p: var Pile; cells: TCells) =
   for i in countDown(3, 0):
     let y = FieldSize.h - (cells[i].y + 1)
     while y > p.height - 1:
-      var newRow: array[FieldSize.w, bool]
+      var newRow: array[FieldSize.w, Cell]
       p.rows.append(newRow)
       p.height.inc()
     p.setUnsafe((x: cells[i].x, y: y))
@@ -156,15 +162,15 @@ proc clearFull(p: var Pile): int =
   var h = p.rows.head
   if h != nil:
     while h.next != nil: # clear tail
-      if h.next.value --> all(it == true):
+      if h.next.value --> all(it != cEmpty):
         h.next = h.next.next
         p.height.dec()
         result.inc()
       else:
         h = h.next
     h = p.rows.head # clear head
-    if h.value --> all(it == true):
-      p.rows.head = h.next # works even when `h.next == nil`
+    if h.value --> all(it != cEmpty):
+      p.rows.head = h.next # also works when `h.next == nil`
       p.height.dec()
       result.inc()
 
@@ -201,7 +207,7 @@ proc waitForInput() {.thread.} =
       of 'j', 'J', char(13): msg = Message(kind: mkMovement, move: mDown)
       of 'k', 'K', char(9): msg = Message(kind: mkMovement, move: mRotate)
       of 'd', 'D', ' ': msg = 
-        Message(kind: mkMovement, move:(if options.hardDrop: mDrop else: mRotate))
+        Message(kind: mkMovement, move:(if options.hardDrop: mDrop else: mDown))
       of 'p', 'P', char(27): msg = Message(kind: mkCommand, command: cPause)
       of 'q', 'Q', char(3): safelyQuit()
       of char(26): 
@@ -209,27 +215,29 @@ proc waitForInput() {.thread.} =
       else: continue
     bus.send(msg)
 
-func calcMove(t: Tetronimo, move: Movement): Tetronimo =
-  var shift = (x: 0, y: 0)
+func calcMove(t: Tetronimo; move: Movement): Tetronimo {.noinit.} =
   result.kind = t.kind
   result.rotation = t.rotation 
   case move:
-    of mDown, mDrop: shift = (0, 1)
-    of mLeft: shift = (-1, 0)
-    of mRight: shift = (1, 0)
-    of mRotate: result.rotation = rotate(t)
-  result.pos = (t.pos.x + shift.x, t.pos.y + shift.y)
+    of mDown, mDrop: result.pos = (t.pos.x, t.pos.y + 1)
+    of mLeft: result.pos = (t.pos.x - 1, t.pos.y)
+    of mRight: result.pos = (t.pos.x + 1, t.pos.y)
+    of mRotate: result.rotation = rotate(t); result.pos = t.pos
 
-func buildField(tCoord: TCells, p: Pile): array[FieldSize.h, array[FieldSize.w, bool]] =
+func buildField(p: Pile): Field =
   var y = FieldSize.h - 1
   for row in p.rows:
     result[y] = row
     y.dec()
-  for c in tCoord:
-    result[c.y][c.x] = true
+
+func addTetronimo(f: sink Field; t: Tetronimo; ghost: bool = false): Field {.noinit inline.}=
+  for c in (t.pos + tCells(t)):
+    if f[c.y][c.x] != cPile:
+      f[c.y][c.x] = if ghost: cGhost else: cTet
+  f
 
 func formatScore(s: Stats): string {.noinit, inline.} =
-  " Score: " & $s.score & " (" & $s.cleared & " cleared), Level: " & $s.level
+  " Score: " & $s.score & ", Cleared: " & $s.cleared & ", Level: " & $s.level
 
 proc updateSpeed(o: var Options; level:int) =
   withLock o.lock:
@@ -245,8 +253,17 @@ proc updateStats(s: var Stats; cleared: int) {.inline.} =
     s.level = newLevel
     updateSpeed(options, newLevel)
 
+proc updateGhost(g: var Tetronimo, cur: Tetronimo, p: Pile) =
+  g = cur
+  while true:
+    let tmp = calcmove(g, mDown)
+    if isValidMove(tmp, p):
+      g = tmp
+    else:
+      break
+
 proc lockAndAdvance(s: var State): bool =
-  ## Locks tje current Tetronimo at its position, if possible.
+  ## Locks the current Tetronimo at its position if possible.
   ## Returns false on fail == Game Over
   s.pile.add(s.curT.pos + tCells(s.curT))
   if isValidMove(s.nextT, s.pile):
@@ -277,15 +294,9 @@ proc main(state: sink State) =
           updateDue = not state.paused
         elif not state.paused: # move only when not paused
           let updatedT = calcMove(state.curT, msg.move)
-          var droppedT = state.curT
-          while true:
-            let tmp = calcmove(droppedT, mDown)
-            if isValidMove(tmp, state.pile):
-              droppedT = tmp
-            else:
-              break
-          
           let nextOk = isValidMove(updatedT, state.pile)
+          state.ghostT.updateGhost(if nextOk: updatedT else: state.curT, state.pile)
+        
           updateDue = true # any valid unpaused move leads to redraw
           case msg.move:
             of mLeft, mRight, mRotate:
@@ -296,14 +307,19 @@ proc main(state: sink State) =
               elif not lockAndAdvance(state): # Can't descend
                 break mainLoop  # Game Over!
             of mDrop:
-              state.curT = droppedT
+              state.curT = state.ghostT
               if not lockAndAdvance(state):
                 break mainLoop
       
       if updateDue:
         let cleared = state.pile.clearFull()
-        state.stats.updateStats(cleared)
-        let field = buildField(state.curT.pos + tCells(state.curT), state.pile)
+        if cleared > 0:
+          state.stats.updateStats(cleared)
+          state.ghostT.updateGhost(state.curT, state.pile) # redraw ghost to avoid lag
+        var field = buildField(state.pile)
+        if options.ghost:
+          field = field.addTetronimo(state.ghostT, ghost = true)
+        field = field.addTetronimo(state.curT) 
         state.ui.update(field)
         state.ui.status = "Next: " & $state.nextT.kind & formatScore(state.stats) 
         state.ui.refresh()
@@ -318,18 +334,19 @@ proc init(): State =
   result.tetros = nextTetronimo
   result.curT = result.tetros.next()
   result.nextT = result.tetros.next()
-  let field = buildField(result.curT.pos + tCells(result.curT), result.pile)
+  let field = buildField(result.pile).addTetronimo(result.curT)
   result.ui = guiInit(field)
   result.stats.updateStats(0)
 
-proc tetronimia(speedcurve: SpeedCurveKind = scNimia, nohdrop: bool = false) =
+proc tetronimia(speedcurve: SpeedCurveKind = scNimia, nohdrop: bool = false, noghost: bool = false) =
   ## Tetronimia: the only winning move is not to play
   ##
   ## Default keys: 
-  ##  Left: H, Soft drop: J|Enter, Rotate: K|Space, Right: L,
-  ##  Pause: P|Esc, Exit: Q|Ctrl+C
+  ##  Left: H, Soft drop: J|Enter, Rotate: K|Tab, Right: L,
+  ##  Hard drop: D|Space, Pause: P|Esc, Exit: Q|Ctrl+C
   options.speedCurve = speedcurve
   options.hardDrop = not nohdrop
+  options.ghost = not noghost
   randomize()
   setControlCHook(safelyQuit)
   main(init())
@@ -337,4 +354,17 @@ proc tetronimia(speedcurve: SpeedCurveKind = scNimia, nohdrop: bool = false) =
 
 when isMainModule:
   clCfg.hTabCols = @[ clOptKeys, clDflVal, clDescrip] # hide types column
-  dispatch(tetronimia, help = HelpStr)
+#  dispatch(tetronimia, help = HelpStr, short = ShortStr)
+  dispatch(tetronimia, help = {
+    "help-syntax": "CLIGEN-NOHELP",
+    "speedcurve": "Select how the speed changes on level advancement\n" &
+                  "n - Default 'Nimia' mode\n" &
+                  "w - Famous 'World' mode",
+    "nohdrop": "Disable the hard drop",
+    "noghost": "Disable the ghost Tetronimo"
+  }, short = {
+    "speedcurve": 's',
+    "nohdrop": 'D',
+    "noghost": 'G'
+  }
+  )
