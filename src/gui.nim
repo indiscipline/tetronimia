@@ -1,61 +1,79 @@
-import terminal, unicode
+import terminal, options
 
 type
-  Cell* = enum
+  CellKind* = enum
     cEmpty, cPile, cTet, cGhost
 
+  Cell* = object
+    k*: CellKind
+    c*: ForegroundColor
+
 const
-  PIXELS* = ["░", "▉"] #▉░▓▮▀▁ ▂ ▃ ▄ ▅ ▆ ▇ █ ▉ ▊ ▋ ▌ ▍ ▎ ▏ ▐ ░ ▒ ▓ ▔ ▕ ▖ ▗ ▘ ▙ ▚ ▛ ▜ ▝ ▞ ▟ 
   FieldSize* = (w: 10, h: 21)
   StartPos* = (x: FieldSize.w div 2 - 2, y: -1)
-  FieldOffset = (x: 1, y: 0)
-  Lines = FieldSize.h + FieldOffset.y + 2
-  CellChars: array[Cell, char] = [' ', '*', '#', '.']
-  #CellKind = enum
-  #  cPile, cTet, cGhost
-  #Cell* = object
-  #  case empty: bool
-  #    of false: kind: CellKind
-  #    of true:
+  TBs = (w: FieldSize.w + 2 + 2, h: (FieldSize.h + 1))
+  Lines = TBs.h + 1 # TB + status line 
 
 type
-  TerminalBuffer = array[FieldSize.h + 1, array[FieldSize.w + 2, char]]
-  UI* = object
-    tb: TerminalBuffer
-    status*: string
   Field* = array[FieldSize.h, array[FieldSize.w, Cell]]
+  UI* = object
+    tb: Field
+    cellChars: array[CellKind, char] #
+    status*: string
+    score: string
 
-proc drawStack(tb: var TerminalBuffer) =
-  for l in FieldOffset.y .. (FieldOffset.y + FieldSize.h - 1):
-    tb[l][FieldOffset.x - 1] = '|'
-    tb[l][FieldOffset.x + FieldSize.w] = '|'
-  for c in FieldOffset.x - 1 .. FieldOffset.x + FieldSize.w:
-    tb[FieldOffset.y + FieldSize.h][c] = '_'
+proc update*(ui: var UI; field: sink Field) =
+  ui.tb = field
 
-proc print(tb: TerminalBuffer) =
-  for l in tb:
-    setCursorXPos(0)
-    let s = @l
-    echo cast[string](s) # TODO: works as long as string == seq[char]
-
-proc refresh*(ui: UI) =
-  cursorUp(Lines)
-  print(ui.tb)
+proc printStatus*(next: (string, ForegroundColor); held: Option[(string, ForegroundColor)]; score: string; color: bool = true) =
   eraseLine()
-  echo(ui.status)
+  stdout.write("Next: ")
+  if color: setForegroundColor(next[1], bright = true)
+  stdout.write(next[0])
+  setForegroundColor(fgDefault)
+  if held.isSome():
+    stdout.write(", HoldBox: ")
+    let h = held.get()
+    if color: setForegroundColor(h[1], bright = true)
+    stdout.write(h[0])
+    setForegroundColor(fgDefault)
+  stdout.write(" |")
+  stdout.write(score & "\n")
+  flushFile(stdout)
 
-proc update*(ui: var UI; field: sink Field; ch: char = '#') =
-  for (y, row) in field.pairs():
-    for (x, c) in row.pairs():
-      ui.tb[y + FieldOffset.y][x + FieldOffset.x] =
-        CellChars[c] #case f c != cEmpty: '#' else: ' '
+proc refresh*(ui: UI, color: bool = true) =
+  cursorUp(Lines)
+  setCursorXPos(0)
+  for r in ui.tb:
+    stdout.write('|')
+    for c in r:
+      if color: setForegroundColor(c.c, bright = true)
+      stdout.write($ui.cellchars[c.k])
+    setForegroundColor(fgDefault)
+    stdout.write("|\n\r")
+  for i in 0..<FieldSize.w+2:
+    stdout.write('_')
+  stdout.write("\n")
+  flushFile(stdout)
 
-proc guiInit*(field: sink Field): UI =
+proc displayMsg*(msg: string) =
+  # displays a message overwriting the status line
+  cursorUp()
+  eraseLine()
+  echo(msg)
+
+proc parseCharset*(cs: string): array[4, char] =
+  result = [' ', '*', '#', '.']
+  if cs.len in 1..2: stderr.write("The charset is too short. Using the defaut one.")
+  elif cs.len >= 3: result[1..3] = cs[0..2]
+
+proc guiInit*(field: sink Field, charset: string): UI =
   hideCursor()
-  result.tb.drawStack()
+  result.cellChars = parseCharset(charset)
   result.update(field)
-  for l in 0..<Lines: echo "" # refresh moves cursor up, preparing blank space here
+  for l in 0..<Lines: echo("") # refresh moves cursor up, preparing blank space here
   result.refresh()
 
 proc deinit*() =
+  setCursorXPos(0)
   showCursor()
