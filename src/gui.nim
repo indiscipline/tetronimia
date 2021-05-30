@@ -1,4 +1,5 @@
-import terminal, options
+import std/[terminal, options]
+from std/strutils import repeat
 
 type
   CellKind* = enum
@@ -12,7 +13,7 @@ const
   FieldSize* = (w: 10, h: 21)
   StartPos* = (x: FieldSize.w div 2 - 2, y: -1)
   TBs = (w: FieldSize.w + 2 + 2, h: (FieldSize.h + 1))
-  Lines = TBs.h + 1 # TB + status line 
+  Lines = TBs.h + 1 # TB + status line
 
 type
   Field* = array[FieldSize.h, array[FieldSize.w, Cell]]
@@ -25,20 +26,21 @@ type
 proc update*(ui: var UI; field: sink Field) =
   ui.tb = field
 
+template writeColored(s: string, c: ForegroundColor, color: bool = true) =
+  if color:
+    stdout.styledWrite(if c.ord() == 0: fgDefault else: c, styleBright, s, resetStyle)
+  else:
+    stdout.write(s)
+
 proc printStatus*(next: (string, ForegroundColor); held: Option[(string, ForegroundColor)]; score: string; color: bool = true) =
   eraseLine()
   stdout.write("Next: ")
-  if color: setForegroundColor(next[1], bright = true)
-  stdout.write(next[0])
-  setForegroundColor(fgDefault)
+  writeColored(next[0], next[1], color)
   if held.isSome():
     stdout.write(", HoldBox: ")
     let h = held.get()
-    if color: setForegroundColor(h[1], bright = true)
-    stdout.write(h[0])
-    setForegroundColor(fgDefault)
-  stdout.write(" |")
-  stdout.write(score & "\n")
+    writeColored(h[0], h[1], color)
+  stdout.write(" |" & score & "\n")
   flushFile(stdout)
 
 proc refresh*(ui: UI, color: bool = true) =
@@ -47,17 +49,12 @@ proc refresh*(ui: UI, color: bool = true) =
   for r in ui.tb:
     stdout.write('|')
     for c in r:
-      if color: setForegroundColor(c.c, bright = true)
-      stdout.write($ui.cellchars[c.k])
-    setForegroundColor(fgDefault)
+      writeColored($ui.cellchars[c.k], c.c, color)
     stdout.write("|\n\r")
-  for i in 0..<FieldSize.w+2:
-    stdout.write('_')
-  stdout.write("\n")
-  flushFile(stdout)
+  echo("_".repeat(FieldSize.w+2))
 
 proc displayMsg*(msg: string) =
-  # displays a message overwriting the status line
+  ## Displays a message overwriting the status line
   cursorUp()
   eraseLine()
   echo(msg)

@@ -1,4 +1,4 @@
-import 
+import
   std/[random, times, lists, os, threadpool, channels, locks, terminal, base64,
        options, tables],
   zero_functional, cligen, gui
@@ -15,7 +15,7 @@ type
     kind: TetronimoKind
     rotation: int
     pos: Coord
-  
+
   ## A pile of fallen blocks, bottom to top
   Pile = object
     rows: SinglyLinkedList[array[FieldSize.w, Cell]]
@@ -31,7 +31,7 @@ type
     paused: bool
     usedHold: bool
     stats: Stats
-  
+
   MessageKind = enum
     mkCommand, mkMovement
   Movement = enum
@@ -42,10 +42,10 @@ type
     case kind: MessageKind
       of mkMovement: move: Movement
       of mkCommand: command: Command
-  
+
   SpeedCurveKind = enum
     scNimia = "n", scWorld = "w"
-  
+
   Options = object
     lock: Lock
     descendPeriod {.guard: lock.}: int
@@ -214,7 +214,7 @@ proc safelyQuit() {.noconv.} =
 
 func calcMove(t: Tetronimo; move: Movement): Tetronimo {.noinit.} =
   result.kind = t.kind
-  result.rotation = t.rotation 
+  result.rotation = t.rotation
   case move:
     of mDown, mDrop, mTick: result.pos = (t.pos.x, t.pos.y + 1)
     of mLeft: result.pos = (t.pos.x - 1, t.pos.y)
@@ -306,13 +306,13 @@ proc waitForInput() {.thread.} =
       of 'l', 'L': msg = Message(kind: mkMovement, move: mRight)
       of 'j', 'J', char(13): msg = Message(kind: mkMovement, move: mDown)
       of 'k', 'K', char(9): msg = Message(kind: mkMovement, move: mRotate)
-      of 'd', 'D', ' ': msg = 
+      of 'd', 'D', ' ': msg =
         Message(kind: mkMovement, move:(if opts.hardDrop: mDrop else: mDown))
       of 'f', 'F': msg = Message(kind: mkCommand, command: cHold)
       of 'p', 'P', char(27): msg = Message(kind: mkCommand, command: cPause)
       of 'q', 'Q', char(3): safelyQuit()
-      of char(26): 
-        when defined(Windows): continue else: stdout.write(char(26)) 
+      of char(26):
+        when defined(Windows): continue else: stdout.write(char(26))
       else: continue
     bus.send(msg)
 
@@ -387,7 +387,7 @@ proc main(state: sink State) =
               if nextOk: state.curT = updatedT
               else: updateDue = false
             of mDown, mTick:
-              if nextOk: 
+              if nextOk:
                 state.curT = updatedT
                 if msg.move == mDown and opts.scoreDrops: state.stats.scoreSoftDrop()
               elif not lockAndAdvance(state): # Can't descend
@@ -397,7 +397,7 @@ proc main(state: sink State) =
               state.curT = state.ghostT
               if not lockAndAdvance(state):
                 break mainLoop # Game Over!
-      
+
       if updateDue:
         let cleared = state.pile.clearFull()
         if cleared > 0:
@@ -410,7 +410,7 @@ proc main(state: sink State) =
         # TODO delay showing the next Tetronimo on LC
         if opts.ghost:
           field = field.addTetronimo(state.ghostT, ghost = true)
-        field = field.addTetronimo(state.curT) 
+        field = field.addTetronimo(state.curT)
         state.ui.update(field)
         state.ui.refresh(opts.color)
         refreshStatus(state.nextT, state.heldT, state.stats)
@@ -432,7 +432,7 @@ proc initState(charset: sink string): State =
 proc tetronimia(speedcurve: SpeedCurveKind = scNimia, nohdrop: bool = false, noghost: bool = false, holdbox: bool = false; nolcdelay: bool = false; nodropreward: bool = false; nocolor: bool = false; charset = "", gameseed = "") =
   ## Tetronimia: the only winning move is not to play
   ##
-  ## Default controls: 
+  ## Default controls:
   ##  Left: H, Soft drop: J|Enter, Rotate: K|Tab, Right: L,
   ##  Hard drop: D|Space, HoldBox: F
   ##  Pause: P|Esc, Exit: Q|Ctrl+C
@@ -448,6 +448,7 @@ proc tetronimia(speedcurve: SpeedCurveKind = scNimia, nohdrop: bool = false, nog
               else: genSeed()
   randomize(opts.seed)
   setControlCHook(safelyQuit)
+  opts.lock.initLock() # necessary for Windows?
   main(initState(charset))
   safelyQuit()
 
