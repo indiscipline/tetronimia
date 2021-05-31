@@ -23,26 +23,6 @@ type
 
   Stats = tuple[cleared, score, level: int]
 
-  State = object
-    ui: UI
-    tetros: iterator(): Tetronimo
-    pile: Pile
-    curT, nextT, ghostT, heldT: Tetronimo
-    paused: bool
-    usedHold: bool
-    stats: Stats
-
-  MessageKind = enum
-    mkCommand, mkMovement
-  Movement = enum
-    mTick, mDown, mLeft, mRight, mRotate, mDrop
-  Command = enum
-    cPause, cClearDelay, cHold
-  Message = object
-    case kind: MessageKind
-      of mkMovement: move: Movement
-      of mkCommand: command: Command
-
   SpeedCurveKind = enum
     scNimia = "n", scWorld = "w"
 
@@ -58,9 +38,26 @@ type
     color: bool
     seed: int64
 
-var
-  bus = newChannel[Message]()
-  opts: Options
+  State = object
+    ui: UI
+    tetros: iterator(): Tetronimo
+    pile: Pile
+    curT, nextT, ghostT, heldT: Tetronimo
+    opts: Options
+    paused: bool
+    usedHold: bool
+    stats: Stats
+
+  MessageKind = enum
+    mkCommand, mkMovement
+  Movement = enum
+    mTick, mDown, mLeft, mRight, mRotate, mDrop
+  Command = enum
+    cPause, cClearDelay, cHold
+  Message = object
+    case kind: MessageKind
+      of mkMovement: move: Movement
+      of mkCommand: command: Command
 
 func apply[T, N, U](a: array[N, T]; p: proc (x:T):U {.noSideEffect.} ): array[N, U] =
   for (i, x) in a.pairs(): result[i] = p(x)
@@ -221,7 +218,8 @@ func calcMove(t: Tetronimo; move: Movement): Tetronimo {.noinit.} =
     of mRight: result.pos = (t.pos.x + 1, t.pos.y)
     of mRotate: result.rotation = rotate(t); result.pos = t.pos
 
-func buildField(p: Pile): Field =
+proc buildField(p: Pile): Field =
+  ## Doesn't check for p.height
   var y = FieldSize.h - 1
   for row in p.rows:
     result[y] = row
@@ -236,7 +234,7 @@ func addTetronimo(f: sink Field; t: Tetronimo; ghost: bool = false): Field {.noi
 func formatScore(s: Stats): string {.noinit, inline.} =
   " Score: " & $s.score & ", Cleared: " & $s.cleared & ", Level: " & $s.level
 
-template refreshStatus(next, held: Tetronimo, stats: Stats) =
+template refreshStatus(next, held: Tetronimo, stats: Stats, opts: Options) =
   printStatus(
     ($next.kind, Rules.Colors[next.kind]),
     (if opts.holdBox:
@@ -245,25 +243,22 @@ template refreshStatus(next, held: Tetronimo, stats: Stats) =
     formatScore(stats),
     opts.color)
 
-proc updateSpeed(o: var Options; level: Natural) =
-  withLock o.lock:
-    o.descendPeriod = case o.speedCurve:
-      of scNimia: toInt(1000.0 * (0.88 ^ level))
-      of scWorld: toInt(1000.0 * ((0.8 - 0.007 * ((toFloat(level) - 1.0))) ^ (level - 1)))
-
-proc updateStats(s: var Stats; cleared: Natural) {.inline.} =
+proc updateStats(s: var Stats; opts: var Options; cleared: Natural) {.inline.} =
   s.cleared.inc(cleared)
   s.score.inc(Rules.LCScoring[cleared] * s.level)
   let newLevel = 1 + s.cleared div 10
   if newLevel > s.level:
     s.level = newLevel
-    updateSpeed(opts, newLevel)
+    withLock opts.lock:
+      opts.descendPeriod = case opts.speedCurve:
+        of scNimia: toInt(1000.0 * (0.88 ^ s.level))
+        of scWorld: toInt(1000.0 * ((0.8 - 0.007 * ((toFloat(s.level) - 1.0))) ^ (s.level - 1)))
 
-proc scoreHardDrop(s: var Stats; fromY: int) {.inline.} =
+template scoreHardDrop(s: var Stats; fromY: int) =
   ## Doesn't matter how long's the drop, but how soon it happens
   s.score.inc((FieldSize.h - fromY - 1) * s.level)
 
-proc scoreSoftDrop(s: var Stats) {.inline.} =
+template scoreSoftDrop(s: var Stats) =
   s.score.inc(s.level)
 
 proc updateGhost(g: var Tetronimo, cur: Tetronimo, p: Pile) =
@@ -287,15 +282,15 @@ proc lockAndAdvance(s: var State): bool =
   else:
     false
 
-proc ticker() {.thread.} =
+proc ticker(bus: ptr channels.Channel[Message]; opts: ptr Options) {.thread.} =
   var dp: int
   while true:
-    withLock(opts.lock):
-      dp = opts.descendPeriod
+    withLock(opts[].lock):
+      dp = opts[].descendPeriod
     sleep(dp)
-    bus.send(Message(kind: mkMovement, move: mTick))
+    bus[].send(Message(kind: mkMovement, move: mTick))
 
-proc waitForInput() {.thread.} =
+proc waitForInput(bus: ptr channels.Channel[Message]; opts: ptr Options) {.thread.} =
   var
     c: char
     msg: Message
@@ -307,27 +302,27 @@ proc waitForInput() {.thread.} =
       of 'j', 'J', char(13): msg = Message(kind: mkMovement, move: mDown)
       of 'k', 'K', char(9): msg = Message(kind: mkMovement, move: mRotate)
       of 'd', 'D', ' ': msg =
-        Message(kind: mkMovement, move:(if opts.hardDrop: mDrop else: mDown))
+        Message(kind: mkMovement, move:(if opts[].hardDrop: mDrop else: mDown))
       of 'f', 'F': msg = Message(kind: mkCommand, command: cHold)
       of 'p', 'P', char(27): msg = Message(kind: mkCommand, command: cPause)
       of 'q', 'Q', char(3): safelyQuit()
       of char(26):
         when defined(Windows): continue else: stdout.write(char(26))
       else: continue
-    bus.send(msg)
+    bus[].send(msg)
 
-proc clearDelay(level: Natural) {.thread.} =
-  bus.send(Message(kind: mkCommand, command: cClearDelay))
+proc clearDelay(bus: ptr channels.Channel[Message]; level: Natural) {.thread.} =
+  bus[].send(Message(kind: mkCommand, command: cClearDelay))
   sleep(toInt( 750.0 * (0.92 ^ level) ))
-  bus.send(Message(kind: mkCommand, command: cClearDelay))
+  bus[].send(Message(kind: mkCommand, command: cClearDelay))
 
 ################################################################################
 proc genSeed(): int64 =
   let now = times.getTime()
-  (convert(Seconds, Nanoseconds, now.toUnix) + now.nanosecond) xor Rules.Salt
+  (convert(Seconds, Nanoseconds, now.toUnix) + now.nanosecond)
 
 proc serialize(i: int64): string =
-  encode(cast[array[8, uint8]](i))
+  encode(cast[array[8, byte]](i xor Rules.Salt))
 
 func deserialize(s: string): int64 =
   var a: array[8, char]
@@ -336,7 +331,7 @@ func deserialize(s: string): int64 =
   while i < 8 and i < d.len:
     a[i] = d[i]
     i.inc
-  cast[int64](a)
+  cast[int64](a) xor Rules.Salt
 
 template formatOpts(opts: Options): string =
   "Game settings: \"-s " & $opts.speedCurve &
@@ -352,9 +347,11 @@ proc main(state: sink State) =
   var
     updateDue = false
     msg: Message
+    bus = newChannel[Message]() # Created a shared channel
+
   # Spawn threads
-  spawn ticker()
-  spawn waitForInput()
+  spawn ticker(addr bus, addr state.opts)
+  spawn waitForInput(addr bus, addr state.opts)
 
   block mainLoop:
     while true:
@@ -368,7 +365,7 @@ proc main(state: sink State) =
             of cClearDelay: # pause privately
               state.paused = not state.paused
             of cHold:
-              if opts.holdBox and not state.usedHold:
+              if state.opts.holdBox and not state.usedHold:
                 let updatedT =
                   Tetronimo(kind: state.heldT.kind, rotation: 0, pos: StartPos)
                 if isValidMove(updatedT, state.pile):
@@ -389,11 +386,11 @@ proc main(state: sink State) =
             of mDown, mTick:
               if nextOk:
                 state.curT = updatedT
-                if msg.move == mDown and opts.scoreDrops: state.stats.scoreSoftDrop()
+                if msg.move == mDown and state.opts.scoreDrops: state.stats.scoreSoftDrop()
               elif not lockAndAdvance(state): # Can't descend
                 break mainLoop # Game Over!
             of mDrop:
-              if opts.scoreDrops: state.stats.scoreHardDrop(state.curT.pos.y)
+              if state.opts.scoreDrops: state.stats.scoreHardDrop(state.curT.pos.y)
               state.curT = state.ghostT
               if not lockAndAdvance(state):
                 break mainLoop # Game Over!
@@ -401,33 +398,34 @@ proc main(state: sink State) =
       if updateDue:
         let cleared = state.pile.clearFull()
         if cleared > 0:
-          state.stats.updateStats(cleared)
+          state.stats.updateStats(state.opts, cleared)
           state.ghostT.updateGhost(state.curT, state.pile) # replace ghost to avoid lag
-          if opts.delayOnClear:
+          if state.opts.delayOnClear:
             #skipTicks = Rules.LCDelay
-            spawn clearDelay(state.stats.level)
+            spawn clearDelay(addr bus, state.stats.level)
         var field = buildField(state.pile)
         # TODO delay showing the next Tetronimo on LC
-        if opts.ghost:
+        if state.opts.ghost:
           field = field.addTetronimo(state.ghostT, ghost = true)
         field = field.addTetronimo(state.curT)
         state.ui.update(field)
-        state.ui.refresh(opts.color)
-        refreshStatus(state.nextT, state.heldT, state.stats)
+        state.ui.refresh(state.opts.color)
+        refreshStatus(state.nextT, state.heldT, state.stats, state.opts)
         updateDue = false
       sleep(33)
   displayMsg("Game Over! Final" & formatScore(state.stats) & "\r")
-  echo(formatOpts(opts))
+  echo(formatOpts(state.opts))
 
-proc initState(charset: sink string): State =
+proc initState(opts: sink Options, charset: sink string): State =
   result.tetros = nextTetronimo
   result.curT = result.tetros.next()
   result.nextT = result.tetros.next()
   result.heldT.kind = rand(TO..TT)
-  result.stats.updateStats(0)
+  result.opts = opts
+  result.stats.updateStats(result.opts, 0)
   let field = buildField(result.pile).addTetronimo(result.curT)
   result.ui = guiInit(field, charset)
-  refreshStatus(result.nextT, result.heldT, result.stats)
+  refreshStatus(result.nextT, result.heldT, result.stats, result.opts)
 
 proc tetronimia(speedcurve: SpeedCurveKind = scNimia, nohdrop: bool = false, noghost: bool = false, holdbox: bool = false; nolcdelay: bool = false; nodropreward: bool = false; nocolor: bool = false; charset = "", gameseed = "") =
   ## Tetronimia: the only winning move is not to play
@@ -437,6 +435,7 @@ proc tetronimia(speedcurve: SpeedCurveKind = scNimia, nohdrop: bool = false, nog
   ##  Hard drop: D|Space, HoldBox: F
   ##  Pause: P|Esc, Exit: Q|Ctrl+C
   ##
+  var opts: Options
   opts.speedCurve = speedcurve
   opts.hardDrop = not nohdrop
   opts.ghost = not noghost
@@ -449,7 +448,7 @@ proc tetronimia(speedcurve: SpeedCurveKind = scNimia, nohdrop: bool = false, nog
   randomize(opts.seed)
   setControlCHook(safelyQuit)
   opts.lock.initLock() # necessary for Windows?
-  main(initState(charset))
+  main(initState(opts, charset))
   safelyQuit()
 
 when isMainModule:

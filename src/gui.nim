@@ -43,7 +43,7 @@ proc printStatus*(next: (string, ForegroundColor); held: Option[(string, Foregro
   stdout.write(" |" & score & "\n")
   flushFile(stdout)
 
-proc refresh*(ui: UI, color: bool = true) =
+proc refresh*(ui: UI; color: bool = true) =
   cursorUp(Lines)
   setCursorXPos(0)
   for r in ui.tb:
