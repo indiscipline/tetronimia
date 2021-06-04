@@ -10,4 +10,4 @@ bin           = @["tetronimia"]
 
 # Dependencies
 
-requires "nim >= 1.5.1"
+requires "nim >= 1.5.1", "cligen >= 1.5.4", "zero_functional >= 1.2.1"
