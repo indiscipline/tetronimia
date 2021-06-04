@@ -361,7 +361,7 @@ proc main(state: sink State) =
             of cPause: # pause publicly
               state.paused = not state.paused
               if state.paused:
-                displayMsg("Paused. Press 'P' or 'Esc' to contiue...")
+                displayMsg("Paused. Press 'P' or 'Esc' to continue...")
             of cClearDelay: # pause privately
               state.paused = not state.paused
             of cHold:
