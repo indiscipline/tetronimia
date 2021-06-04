@@ -297,13 +297,13 @@ proc waitForInput(bus: ptr channels.Channel[Message]; opts: ptr Options) {.threa
   while true:
     c = getch()
     case c:
-      of 'h', 'H': msg = Message(kind: mkMovement, move: mLeft)
-      of 'l', 'L': msg = Message(kind: mkMovement, move: mRight)
-      of 'j', 'J', char(13): msg = Message(kind: mkMovement, move: mDown)
-      of 'k', 'K', char(9): msg = Message(kind: mkMovement, move: mRotate)
+      of 'h', 'H', 'b', 'B': msg = Message(kind: mkMovement, move: mLeft)
+      of 'l', 'L', 'f', 'F': msg = Message(kind: mkMovement, move: mRight)
+      of 'j', 'J', 'n', 'N', char(13): msg = Message(kind: mkMovement, move: mDown)
+      of 'k', 'K', 'r', 'R', char(9): msg = Message(kind: mkMovement, move: mRotate)
       of 'd', 'D', ' ': msg =
         Message(kind: mkMovement, move:(if opts[].hardDrop: mDrop else: mDown))
-      of 'f', 'F': msg = Message(kind: mkCommand, command: cHold)
+      of 'x', 'X': msg = Message(kind: mkCommand, command: cHold)
       of 'p', 'P', char(27): msg = Message(kind: mkCommand, command: cPause)
       of 'q', 'Q', char(3): safelyQuit()
       of char(26):
@@ -431,8 +431,8 @@ proc tetronimia(speedcurve: SpeedCurveKind = scNimia, nohdrop: bool = false, nog
   ## Tetronimia: the only winning move is not to play
   ##
   ## Default controls:
-  ##  Left: H, Soft drop: J|Enter, Rotate: K|Tab, Right: L,
-  ##  Hard drop: D|Space, HoldBox: F
+  ##  Left: H|B, Soft drop: J|N|Enter, Rotate: K|R|Tab, Right: L|F,
+  ##  Hard drop: D|Space, HoldBox: X
   ##  Pause: P|Esc, Exit: Q|Ctrl+C
   ##
   var opts: Options
