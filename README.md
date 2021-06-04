@@ -24,7 +24,7 @@ No complicated rotation systems, no wall kicks, no music, no gui, no net usage, 
  - Show how easy it is to manipulate a human into doing silly things
  - Deceive you into thinking you're in control
  - Disappoint you in the end
- 
+
 Tetronimia does all of the above. Nothing more. It's ideal. Did I mention you can't win?
 
 ## How
@@ -33,7 +33,21 @@ Download a binary from the release assets or compile the game yourself.
 
 For compilation you currently need a `devel` branch of Nim compiler installed. Use `choosenim` for that.
 
-Compile with `nimble build` or just `nim c -d:release --gc:orc src/tetronimia.nim -o tetronimia`
+To install the `nimble` dependencies:
+
+```
+nimble install cligen
+nimble install zero_functional
+```
+
+To build the executable:
+
+```
+git clone https://github.com/indiscipline/tetronimia
+cd tetronimia
+nim build
+./tetronimia -h
+```
 
 ### Playing
 The game has a basic set of options, available via `--help` or `-h` argument (thanks to amazing [cligen](https://github.com/c-blake/cligen)).
