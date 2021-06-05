@@ -11,9 +11,12 @@ type
   TetronimoKind = enum
     TO = "O", TI = "I", TS = "S", TZ = "Z", TL = "L", TJ = "J", TT = "T"
 
+  RotationDir = enum
+    CW = "cw", CCW = "ccw"
+
   Tetronimo = object
     kind: TetronimoKind
-    rotation: int
+    rotation: Natural
     pos: Coord
 
   ## A pile of fallen blocks, bottom to top
@@ -30,6 +33,7 @@ type
     lock: Lock
     descendPeriod {.guard: lock.}: int
     speedCurve: SpeedCurveKind
+    rotation: RotationDir
     hardDrop: bool
     ghost: bool
     holdBox: bool
@@ -51,7 +55,7 @@ type
   MessageKind = enum
     mkCommand, mkMovement
   Movement = enum
-    mTick, mDown, mLeft, mRight, mRotate, mDrop
+    mTick, mDown, mLeft, mRight, mRotateCw, mRotateCcw, mDrop
   Command = enum
     cPause, cClearDelay, cHold
   Message = object
@@ -91,17 +95,19 @@ const
     "speedcurve": "Select how the speed changes on level advancement:\n" &
                   " n - Default 'Nimia' mode. Cruising to the inevitable.\n" &
                   " w - Famous 'World' mode. Impetuous crescendo.",
-    "nohdrop": "Disable the hard drop",
-    "noghost": "Disable the ghost Tetronimo",
-    "holdbox": "Enable the Hold Box",
+    "rotation": "Select the rotation direction:\n ccw - counterclockwise (default)\n cw - clockwise.",
+    "nohdrop": "Disable the hard drop.",
+    "noghost": "Disable the ghost Tetronimo.",
+    "holdbox": "Enable the Hold Box.",
     "charset": "Override the characters for the Pile, the Tetronimos and the Ghost.",
     "nolcdelay": "Disable delay on Line Clear.",
-    "nodropreward": "Disable rewarding soft and hard drops",
-    "nocolor": "Disable the coloring",
-    "gameseed": "Initialize random generator",
+    "nodropreward": "Disable rewarding soft and hard drops.",
+    "nocolor": "Disable the coloring.",
+    "gameseed": "Initialize random generator (use for competitive replay).",
   }.toTable()
   ShortS = {
     "speedcurve": 's',
+    "rotation": 'r',
     "nohdrop": 'D',
     "noghost": 'G',
     "holdbox": 'b',
@@ -126,11 +132,11 @@ func tCells(tk: TetronimoKind; rotation: int): TCells =
 
 func tCells(t: Tetronimo): TCells = tCells(t.kind, t.rotation)
 
-func rotate(t: Tetronimo): int =
+func rotate(t: Tetronimo, rd: RotationDir): Natural =
   case t.kind:
     of TO: t.rotation
     of TI..TZ: (t.rotation + 1) mod 2
-    of TL..TT: (t.rotation + 1) mod 4
+    of TL..TT: (t.rotation + (if rd == CCW: 1 else: 3)) mod 4
 
 iterator nextTetronimo(): Tetronimo {.closure.} =
   ## Yields tetronimos in their default rotation,
@@ -216,7 +222,8 @@ func calcMove(t: Tetronimo; move: Movement): Tetronimo {.noinit.} =
     of mDown, mDrop, mTick: result.pos = (t.pos.x, t.pos.y + 1)
     of mLeft: result.pos = (t.pos.x - 1, t.pos.y)
     of mRight: result.pos = (t.pos.x + 1, t.pos.y)
-    of mRotate: result.rotation = rotate(t); result.pos = t.pos
+    of mRotateCcw: result.rotation = rotate(t, CCW); result.pos = t.pos
+    of mRotateCw: result.rotation = rotate(t, CW); result.pos = t.pos
 
 proc buildField(p: Pile): Field =
   ## Doesn't check for p.height
@@ -300,9 +307,10 @@ proc waitForInput(bus: ptr channels.Channel[Message]; opts: ptr Options) {.threa
       of 'h', 'H': msg = Message(kind: mkMovement, move: mLeft)
       of 'l', 'L': msg = Message(kind: mkMovement, move: mRight)
       of 'j', 'J', char(13): msg = Message(kind: mkMovement, move: mDown)
-      of 'k', 'K', char(9): msg = Message(kind: mkMovement, move: mRotate)
+      of 'k', 'K', char(9): msg =
+        Message(kind: mkMovement, move: if opts[].rotation == CCW: mRotateCcw else: mRotateCw)
       of 'd', 'D', ' ': msg =
-        Message(kind: mkMovement, move:(if opts[].hardDrop: mDrop else: mDown))
+        Message(kind: mkMovement, move: if opts[].hardDrop: mDrop else: mDown)
       of 'f', 'F': msg = Message(kind: mkCommand, command: cHold)
       of 'p', 'P', char(27): msg = Message(kind: mkCommand, command: cPause)
       of 'q', 'Q', char(3): safelyQuit()
@@ -380,7 +388,7 @@ proc main(state: sink State) =
           state.ghostT.updateGhost(if nextOk: updatedT else: state.curT, state.pile)
           updateDue = true # any valid unpaused move leads to redraw
           case msg.move:
-            of mLeft, mRight, mRotate:
+            of mLeft, mRight, mRotateCcw, mRotateCw:
               if nextOk: state.curT = updatedT
               else: updateDue = false
             of mDown, mTick:
@@ -427,7 +435,7 @@ proc initState(opts: sink Options, charset: sink string): State =
   result.ui = guiInit(field, charset)
   refreshStatus(result.nextT, result.heldT, result.stats, result.opts)
 
-proc tetronimia(speedcurve: SpeedCurveKind = scNimia, nohdrop: bool = false, noghost: bool = false, holdbox: bool = false; nolcdelay: bool = false; nodropreward: bool = false; nocolor: bool = false; charset = "", gameseed = "") =
+proc tetronimia(speedcurve: SpeedCurveKind = scNimia; rotation: RotationDir = CW; nohdrop: bool = false, noghost: bool = false, holdbox: bool = false, nolcdelay: bool = false, nodropreward: bool = false, nocolor: bool = false; charset = "", gameseed = "") =
   ## Tetronimia: the only winning move is not to play
   ##
   ## Default controls:
@@ -437,6 +445,7 @@ proc tetronimia(speedcurve: SpeedCurveKind = scNimia, nohdrop: bool = false, nog
   ##
   var opts: Options
   opts.speedCurve = speedcurve
+  opts.rotation = rotation
   opts.hardDrop = not nohdrop
   opts.ghost = not noghost
   opts.holdBox = holdbox
