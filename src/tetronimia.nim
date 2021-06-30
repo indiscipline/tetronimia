@@ -51,13 +51,14 @@ type
     paused: bool
     usedHold: bool
     stats: Stats
+    gameOver: bool
 
   MessageKind = enum
     mkCommand, mkMovement
   Movement = enum
     mTick, mDown, mLeft, mRight, mRotateCw, mRotateCcw, mDrop
   Command = enum
-    cPause, cClearDelay, cHold
+    cPause, cClearDelay, cHold, cQuit
   Message = object
     case kind: MessageKind
       of mkMovement: move: Movement
@@ -238,17 +239,17 @@ func addTetronimo(f: sink Field; t: Tetronimo; ghost: bool = false): Field {.noi
       f[c.y][c.x] = Cell(k: (if ghost: cGhost else: cTet), c: Rules.Colors[t.kind])
   f
 
-func formatScore(s: Stats): string {.noinit, inline.} =
+func `$`(s: Stats): string {.noinit, inline.} =
   " Score: " & $s.score & ", Cleared: " & $s.cleared & ", Level: " & $s.level
 
 template refreshStatus(next, held: Tetronimo, stats: Stats, opts: Options) =
   printStatus(
-    ($next.kind, Rules.Colors[next.kind]),
-    (if opts.holdBox:
+    ($next.kind, Rules.Colors[next.kind]), (
+    if opts.holdBox:
       some(($held.kind, Rules.Colors[held.kind]))
-    else: none((string, ForegroundColor))),
-    formatScore(stats),
-    opts.color)
+    else:
+      none((string, ForegroundColor))
+    ), $stats, opts.color)
 
 proc updateStats(s: var Stats; opts: var Options; cleared: Natural) {.inline.} =
   s.cleared.inc(cleared)
@@ -297,27 +298,31 @@ proc ticker(bus: ptr channels.Channel[Message]; opts: ptr Options) {.thread.} =
     sleep(dp)
     bus[].send(Message(kind: mkMovement, move: mTick))
 
-proc waitForInput(bus: ptr channels.Channel[Message]; opts: ptr Options) {.thread.} =
+proc waitForInput(bus: ptr channels.Channel[Message]; opts: ptr Options; gameOver: ptr bool) {.thread.} =
   var
     c: char
     msg: Message
   while true:
     c = getch()
-    case c:
-      of 'h', 'H': msg = Message(kind: mkMovement, move: mLeft)
-      of 'l', 'L': msg = Message(kind: mkMovement, move: mRight)
-      of 'j', 'J', char(13): msg = Message(kind: mkMovement, move: mDown)
-      of 'k', 'K', char(9): msg =
-        Message(kind: mkMovement, move: if opts[].rotation == CCW: mRotateCcw else: mRotateCw)
-      of 'd', 'D', ' ': msg =
-        Message(kind: mkMovement, move: if opts[].hardDrop: mDrop else: mDown)
-      of 'f', 'F': msg = Message(kind: mkCommand, command: cHold)
-      of 'p', 'P', char(27): msg = Message(kind: mkCommand, command: cPause)
-      of 'q', 'Q', char(3): safelyQuit()
-      of char(26):
-        when defined(Windows): continue else: stdout.write(char(26))
-      else: continue
-    bus[].send(msg)
+    if not gameOver[]:
+      case c:
+        of 'h', 'H': msg = Message(kind: mkMovement, move: mLeft)
+        of 'l', 'L': msg = Message(kind: mkMovement, move: mRight)
+        of 'j', 'J', char(13): msg = Message(kind: mkMovement, move: mDown)
+        of 'k', 'K', char(9): msg =
+          Message(kind: mkMovement, move: if opts[].rotation == CCW: mRotateCcw else: mRotateCw)
+        of 'd', 'D', ' ': msg =
+          Message(kind: mkMovement, move: if opts[].hardDrop: mDrop else: mDown)
+        of 'f', 'F': msg = Message(kind: mkCommand, command: cHold)
+        of 'p', 'P', char(27): msg = Message(kind: mkCommand, command: cPause)
+        of 'q', 'Q', char(3): msg = Message(kind: mkCommand, command: cQuit)
+        of char(26):
+          when defined(Windows): continue else: stdout.write(char(26))
+        else: continue
+      bus[].send(msg)
+    else:
+      bus[].send(Message(kind: mkCommand, command: cQuit))
+      break
 
 proc clearDelay(bus: ptr channels.Channel[Message]; level: Natural) {.thread.} =
   bus[].send(Message(kind: mkCommand, command: cClearDelay))
@@ -341,7 +346,7 @@ func deserialize(s: string): int64 =
     i.inc
   cast[int64](a) xor Rules.Salt
 
-template formatOpts(opts: Options): string =
+proc `$`(opts: Options): string {.noinit, inline.} =
   "Game settings: \"-s " & $opts.speedCurve &
   (if not opts.hardDrop: " -" & $ShortS["nohdrop"] else: "") &
   (if not opts.ghost: " -" & ShortS["noghost"] else: "") &
@@ -359,7 +364,7 @@ proc main(state: sink State) =
 
   # Spawn threads
   spawn ticker(addr bus, addr state.opts)
-  spawn waitForInput(addr bus, addr state.opts)
+  spawn waitForInput(addr bus, addr state.opts, addr state.gameOver)
 
   block mainLoop:
     while true:
@@ -381,6 +386,8 @@ proc main(state: sink State) =
                   state.curT = updatedT
                   state.ghostT.updateGhost(state.curT, state.pile) # update ghost
                   state.usedHold = true
+            of cQuit:
+              break mainLoop
           updateDue = not state.paused
         elif not state.paused: # move only when not paused
           let updatedT = calcMove(state.curT, msg.move)
@@ -396,11 +403,13 @@ proc main(state: sink State) =
                 state.curT = updatedT
                 if msg.move == mDown and state.opts.scoreDrops: state.stats.scoreSoftDrop()
               elif not lockAndAdvance(state): # Can't descend
+                state.gameOver = true
                 break mainLoop # Game Over!
             of mDrop:
               if state.opts.scoreDrops: state.stats.scoreHardDrop(state.curT.pos.y)
               state.curT = state.ghostT
               if not lockAndAdvance(state):
+                state.gameOver = true
                 break mainLoop # Game Over!
 
       if updateDue:
@@ -409,10 +418,8 @@ proc main(state: sink State) =
           state.stats.updateStats(state.opts, cleared)
           state.ghostT.updateGhost(state.curT, state.pile) # replace ghost to avoid lag
           if state.opts.delayOnClear:
-            #skipTicks = Rules.LCDelay
             spawn clearDelay(addr bus, state.stats.level)
         var field = buildField(state.pile)
-        # TODO delay showing the next Tetronimo on LC
         if state.opts.ghost:
           field = field.addTetronimo(state.ghostT, ghost = true)
         field = field.addTetronimo(state.curT)
@@ -421,8 +428,17 @@ proc main(state: sink State) =
         refreshStatus(state.nextT, state.heldT, state.stats, state.opts)
         updateDue = false
       sleep(33)
-  displayMsg("Game Over! Final" & formatScore(state.stats) & "\r")
-  echo(formatOpts(state.opts))
+  if state.gameOver:
+    displayMsg("Game Over! Final" & $state.stats & "\n\r" & $state.opts)
+    when defined(Windows):
+    # This block is known to be necessary only for cmd.exe
+    # but we won't discriminate between Windows users
+      echo("\rPress any key to exit...")
+      while true: # Ticker isn't stopped and channel buffer can be non-empty
+        msg = bus.recv()
+        if msg.kind == mkCommand and msg.command == cQuit:
+          break
+  safelyQuit()
 
 proc initState(opts: sink Options, charset: sink string): State =
   result.tetros = nextTetronimo
