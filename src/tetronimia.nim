@@ -1,7 +1,7 @@
 import
   std/[random, times, lists, os, threadpool, channels, locks, terminal, base64,
        options, tables],
-  zero_functional, cligen, gui
+  zero_functional, cligen, gui, shufflearray
 from std/math import `^`
 
 type
@@ -20,9 +20,7 @@ type
     pos: Coord
 
   ## A pile of fallen blocks, bottom to top
-  Pile = object
-    rows: SinglyLinkedList[array[FieldSize.w, Cell]]
-    height: int
+  Pile = ShuffleArray[FieldSize.h, array[FieldSize.w, Cell]]
 
   Stats = tuple[cleared, score, level: int]
 
@@ -158,50 +156,20 @@ func `+`(pos: Coord, offsets: TCells): TCells {.inline.} =
     result[i] = (x: offsets[i].x + pos.x, y: offsets[i].y + pos.y)
 
 ###############################################################################
-func getUnsafe[T](l: SinglyLinkedList[T]; n: Natural): SinglyLinkedNode[T] =
-  ## Gets Nth row of the list unsafely, `n` must be valid!
-  result = l.head
-  var row = 0
-  while row < n:
-    result = result.next
-    row.inc()
-
 func get(p: Pile; pos: Coord): bool =
   ## Check if the cell is in the Pile, coordinates relative to the field
-  ## Relies on `p.height` for iteration: must be valid!
   let y = FieldSize.h - (pos.y + 1) # invert vertical coord
-  y < p.height and (p.rows.getUnsafe(y).value[pos.x].k != cEmpty) # short-circuits, do not reorder!
-
-proc setUnsafe(p: Pile; pileCell: Coord, kind: TetronimoKind) {.inline.} =
-  ## Occupies a cell in the pile, coordinates relative to the pile
-  ## Unsafely iterates the pile. `pileCell.y` must be valid!
-  p.rows.getUnsafe(pileCell.y).value[pileCell.x] = Cell(k: cPile, c: Rules.Colors[kind])
+  y < p.len() and p[y][pos.x].k != cEmpty # short-circuits, do not reorder!
 
 proc add(p: var Pile; cells: TCells, kind: TetronimoKind) =
   for i in countDown(3, 0):
     let y = FieldSize.h - (cells[i].y + 1)
-    while y > p.height - 1:
-      var newRow: array[FieldSize.w, Cell]
-      p.rows.append(newRow)
-      p.height.inc()
-    p.setUnsafe((x: cells[i].x, y: y), kind)
+    while p.len() - 1 < y:
+      p.append()
+    p[y][cells[i].x] = Cell(k: cPile, c: Rules.Colors[kind])
 
-proc clearFull(p: var Pile): int =
-  var h = p.rows.head
-  if h != nil:
-    while h.next != nil: # clear tail
-      if h.next.value --> all(it.k != cEmpty):
-        h.next = h.next.next
-        p.height.dec()
-        result.inc()
-      else:
-        h = h.next
-    h = p.rows.head # clear head
-    if h.value --> all(it.k != cEmpty):
-      p.rows.head = h.next # also works when `h.next == nil`
-      p.height.dec()
-      result.inc()
-
+template clearFull(p: var Pile): int =
+  p.retainIf( proc(x: Pile.T): bool = not (x --> all(it.k != cEmpty)) )
 ###############################################################################
 func isValidMove(t: Tetronimo; newPos: Coord; newRotation: int; p: Pile): bool =
   let
@@ -229,7 +197,7 @@ func calcMove(t: Tetronimo; move: Movement): Tetronimo {.noinit.} =
 proc buildField(p: Pile): Field =
   ## Doesn't check for p.height
   var y = FieldSize.h - 1
-  for row in p.rows:
+  for row in p:
     result[y] = row
     y.dec()
 
@@ -447,6 +415,7 @@ proc initState(opts: sink Options, charset: sink string): State =
   result.heldT.kind = rand(TO..TT)
   result.opts = opts
   result.stats.updateStats(result.opts, 0)
+  result.pile = initShuffleArray[FieldSize.h, array[FieldSize.w, Cell]]()
   let field = buildField(result.pile).addTetronimo(result.curT)
   result.ui = guiInit(field, charset)
   refreshStatus(result.nextT, result.heldT, result.stats, result.opts)
