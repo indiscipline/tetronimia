@@ -21,4 +21,4 @@ jobs:
         with:
           path: 'nim'
           version: ${{ matrix.nim }}
-      - run: nimble build
+      - run: nimble build -y
