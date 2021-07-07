@@ -1,0 +1,24 @@
+name: buildrelease
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        os: ['windows-latest', 'macos-latest', 'ubuntu-latest']
+        nim: ['devel']
+
+    name: Nim ${{ matrix.nim }} on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v2
+      - uses: alaviss/setup-nim@0.1.1
+        with:
+          path: 'nim'
+          version: ${{ matrix.nim }}
+      - run: nimble build
