@@ -1,18 +1,14 @@
-type ShuffleArray*[L: static[Natural], T] {.requiresInit.} = object
-  idx: array[L, Natural]
+type ShuffleArray*[L: static[Natural], T] = object
+  idx {.requiresInit.}: array[L, Natural]
   data: array[L, T]
   len: Natural
 
-template resetIdx(a: var ShuffleArray) =
-  for i, idx in a.idx.mpairs: idx = i
+template resetIdx[L: static[Natural]](idx: var array[L, Natural]) =
+  for i in 0..<idx.len():
+    idx[i] = i
 
-{.push warning[ProveInit]:off.}
 func initShuffleArray*[L: static[Natural]; T](): ShuffleArray[L, T] {.noinit.} =
-  result.len = 0
-  for i in result.data.mitems:
-    i = default(T)
-  result.resetIdx()
-{.pop.}
+  ShuffleArray[L, T](idx: (var i: array[L, Natural]; i.resetIdx(); i))
 
 proc overwrite*(a: var ShuffleArray; val: openArray[ShuffleArray.T]) =
   ## Overwrites `a` with the contents of `val` and adjusts
@@ -22,7 +18,7 @@ proc overwrite*(a: var ShuffleArray; val: openArray[ShuffleArray.T]) =
     raise newException(IndexDefect, "Can't overwrite contents, lengths are not equal!")
   else:
     a.data = val
-    a.resetIdx()
+    a.idx.resetIdx()
     a.len = vlen
 
 func `[]`*(a: ShuffleArray; i: Natural): lent ShuffleArray.T =
@@ -49,22 +45,22 @@ iterator pairs*(a: ShuffleArray): (Natural, lent ShuffleArray.T) =
     yield (i, a.data[a.idx[i]])
 
 proc removeUnsafe(a: var ShuffleArray; i: Natural) =
-  #assert (i < a.len and a.len > 0):
+  #assert (i < a.len and a.len > 0)
   if i != a.len-1:
     let pop = a.idx[i]
     moveMem(addr a.idx[i], addr a.idx[i+1],
-            sizeOf(ShuffleArray.T) * (a.len - 1 - i) 
+            sizeOf(Natural) * (a.len - 1 - i)
     ) #a.idx[i..<a.len-1] = a.idx[i+1..<a.len]
     a.idx[a.len-1] = pop
   a.len.dec()
 
-proc toSeq*(a: ShuffleArray): seq[ShuffleArray.T] {.noinit inline.} =
+proc toSeq*(a: ShuffleArray): seq[ShuffleArray.T] {.inline.} =
   result = newSeqOfCap[ShuffleArray.T](a.len)
   result.setLen(a.len)
   for i, val in a:
     result[i] = val
 
-proc retainIf*(a: var ShuffleArray; 
+proc retainIf*(a: var ShuffleArray;
                pred: proc(x: ShuffleArray.T): bool {.closure.}
                ): int {.inline.} =
   ## Removes the items of `a` if they fulfil the
@@ -78,7 +74,7 @@ proc retainIf*(a: var ShuffleArray;
 when isMainModule:
   var test = initShuffleArray[4, int]()
   test.data = [1,2,3,4]
-  test.resetIdx()
+  test.idx.resetIdx()
   test.len = 4
   block:
     var t = test
@@ -87,7 +83,7 @@ when isMainModule:
     assert t.len == 3
     assert t.idx == [0.Natural,2,3,1]
     assert t.toSeq == @[1,3,4]
-    
+
     t.append(9)
     assert t.len == 4
     assert t.toSeq == @[1,3,4,9]
@@ -97,8 +93,13 @@ when isMainModule:
     assert t.idx == [2.Natural,3,1,0]
     assert t.len == 3
     assert t.toSeq == @[3,4,9]
-    
+
     assert t.retainIf(proc(x:int): bool = x mod 3 != 0) == 2
     assert t.len == 1
     assert t.toSeq == @[4]
+    assert t.idx == [3.Natural,2,1,0]
+
+    t.removeUnsafe(0)
+    assert t.len == 0
+    assert t.toSeq == @[]
     assert t.idx == [3.Natural,2,1,0]

@@ -210,7 +210,7 @@ func addTetronimo(f: sink Field; t: Tetronimo; ghost: bool = false): Field {.noi
 func `$`(s: Stats): string {.noinit, inline.} =
   " Score: " & $s.score & ", Cleared: " & $s.cleared & ", Level: " & $s.level
 
-template refreshStatus(next, held: Tetronimo, stats: Stats, opts: Options) =
+template refreshStatus(next, held: Tetronimo; stats: Stats; opts: Options) =
   printStatus(
     ($next.kind, Rules.Colors[next.kind]), (
     if opts.holdBox:
@@ -409,16 +409,17 @@ proc main(state: sink State) =
   safelyQuit()
 
 proc initState(opts: sink Options, charset: sink string): State =
-  result.tetros = nextTetronimo
-  result.curT = result.tetros.next()
-  result.nextT = result.tetros.next()
-  result.heldT.kind = rand(TO..TT)
-  result.opts = opts
-  result.stats.updateStats(result.opts, 0)
-  result.pile = initShuffleArray[FieldSize.h, array[FieldSize.w, Cell]]()
-  let field = buildField(result.pile).addTetronimo(result.curT)
-  result.ui = guiInit(field, charset)
-  refreshStatus(result.nextT, result.heldT, result.stats, result.opts)
+  var tetros = nextTetronimo
+  let
+    curT = tetros.next()
+    nextT = tetros.next()
+    stats = (var s: Stats; s.updateStats(opts, 0); s)
+    pile = initShuffleArray[FieldSize.h, array[FieldSize.w, Cell]]()
+    heldT = (var t: Tetronimo; t.kind = rand(TO..TT); t)
+    ui = guiInit(buildField(pile).addTetronimo(curT), charset)
+  refreshStatus(nextT, heldT, stats, opts)
+  State(tetros: tetros, pile: pile, stats: stats, curT: curT, nextT: nextT,
+        heldT: heldT, opts: opts, ui: ui)
 
 proc tetronimia(speedcurve: SpeedCurveKind = scNimia; rotation: RotationDir = CW; nohdrop: bool = false, noghost: bool = false, holdbox: bool = false, nolcdelay: bool = false, nodropreward: bool = false, nocolor: bool = false; charset = "", gameseed = "") =
   ## Tetronimia: the only winning move is not to play
