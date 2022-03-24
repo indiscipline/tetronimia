@@ -1,6 +1,6 @@
 # Package
 
-version       = "0.1.0"
+version       = "0.1.1"
 author        = "Kirill I"
 description   = "Nim implementation of tetris"
 license       = "GPL-2.0-or-later"
