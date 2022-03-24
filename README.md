@@ -33,11 +33,12 @@ Tetronimia does all of the above. Nothing more. It's ideal. Did I mention you ca
 ### Installation
 Download a binary from the release assets or compile the game yourself.
 
-For compilation you currently need a `devel` branch of Nim compiler installed. Use `choosenim` for that.
+Since v0.2.0, Tetronimia supports stable Nim compiler >= 1.4.6. It relies on the new official [threading](https://github.com/nim-lang/threading) package for the `Channel` implementation (earlier experimental implementation from the Nim's devel branch, on which we relied previously, was dropped). Use `choosenim` to install and manage the Nim compilation toolchain.
 
-To install the `nimble` dependencies:
+To install the dependencies:
 
 ```
+nimble install threading
 nimble install cligen
 nimble install zero_functional
 ```
@@ -59,10 +60,10 @@ The defaults are chosen to be "perfectly balanced". If you think you're not good
 ## What does the name mean?
 Don't try to translate it from Latin, it just pretends being it.
 
-It has Nim and that *other thing* inside and sounds like a desease, what's more to want.
+It has Nim and that *other thing* inside and sounds like a disease, what's more to want.
 
 ## Contributing
-If you know how to shave more lines off the code without golfing or know how to port it to [CPS](https://github.com/disruptek/cps/) I'm all for that.
+If you know how to shave more lines off the code without golfing or know how to port it to [CPS](https://github.com/nim-works/cps/) I'm all for that.
 
 For other ideas, just open an issue.
 

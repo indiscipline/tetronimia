@@ -1,8 +1,11 @@
 import
-  std/[random, times, lists, os, threadpool, channels, locks, terminal, base64,
-       options, tables],
-  zero_functional, cligen, gui, shufflearray
+  std/[random, times, lists, os, threadpool, locks, terminal, base64,
+  options, tables, strformat],
+  threading/channels, zero_functional, cligen, gui, shufflearray
 from std/math import `^`
+
+## Autodefined by Nimble. If built using pure nim, use git tag.
+const NimblePkgVersion {.strdefine.} = staticExec "git describe --tags HEAD"
 
 type
   Coord = tuple[x, y: int]
@@ -103,6 +106,8 @@ const
     "nodropreward": "Disable rewarding soft and hard drops.",
     "nocolor": "Disable the coloring.",
     "gameseed": "Initialize random generator (use for competitive replay).",
+    "help": "Print this help text.",
+    "version": "Print version and exit.",
   }.toTable()
   ShortS = {
     "speedcurve": 's',
@@ -115,6 +120,7 @@ const
     "nodropreward": 'R',
     "nocolor": 'M',
     "gameseed": 'g',
+    "version": 'v',
   }.toTable()
 
 ###############################################################################
@@ -208,7 +214,7 @@ func addTetronimo(f: sink Field; t: Tetronimo; ghost: bool = false): Field {.noi
   f
 
 func `$`(s: Stats): string {.noinit, inline.} =
-  " Score: " & $s.score & ", Cleared: " & $s.cleared & ", Level: " & $s.level
+  &" Score: {s.score}, Cleared: {s.cleared}, Level: {s.level}"
 
 template refreshStatus(next, held: Tetronimo; stats: Stats; opts: Options) =
   printStatus(
@@ -258,7 +264,7 @@ proc lockAndAdvance(s: var State): bool =
   else:
     false
 
-proc ticker(bus: ptr channels.Channel[Message]; opts: ptr Options) {.thread.} =
+proc ticker(bus: ptr Chan[Message]; opts: ptr Options) {.thread.} =
   var dp: int
   while true:
     withLock(opts[].lock):
@@ -266,7 +272,7 @@ proc ticker(bus: ptr channels.Channel[Message]; opts: ptr Options) {.thread.} =
     sleep(dp)
     bus[].send(Message(kind: mkMovement, move: mTick))
 
-proc waitForInput(bus: ptr channels.Channel[Message]; opts: ptr Options; gameOver: ptr bool) {.thread.} =
+proc waitForInput(bus: ptr Chan[Message]; opts: ptr Options; gameOver: ptr bool) {.thread.} =
   var
     c: char
     msg: Message
@@ -292,7 +298,7 @@ proc waitForInput(bus: ptr channels.Channel[Message]; opts: ptr Options; gameOve
       bus[].send(Message(kind: mkCommand, command: cQuit))
       break
 
-proc clearDelay(bus: ptr channels.Channel[Message]; level: Natural) {.thread.} =
+proc clearDelay(bus: ptr Chan[Message]; level: Natural) {.thread.} =
   bus[].send(Message(kind: mkCommand, command: cClearDelay))
   sleep(toInt( 750.0 * (0.92 ^ level) ))
   bus[].send(Message(kind: mkCommand, command: cClearDelay))
@@ -315,20 +321,25 @@ func deserialize(s: string): int64 =
   cast[int64](a) xor Rules.Salt
 
 proc `$`(opts: Options): string {.noinit, inline.} =
-  "Game settings: \"-s " & $opts.speedCurve &
-  (if not opts.hardDrop: " -" & $ShortS["nohdrop"] else: "") &
-  (if not opts.ghost: " -" & ShortS["noghost"] else: "") &
-  (if opts.holdBox: " -" & $ShortS["holdbox"] else: "") &
-  (if not opts.delayOnClear: " -" & $ShortS["nolcdelay"] else: "") &
-  (if not opts.scoreDrops: " -" & $ShortS["nodropreward"] else: "") &
-  " --gameseed " & serialize(opts.seed) & "\""
+  func short(t: tuple[o: bool; key: string]): string =
+    if t.o: $ShortS[t.key] else: ""
+  let optStr: string = [
+      (not opts.hardDrop, "nohdrop"),
+      (not opts.ghost, "noghost"),
+      (opts.holdBox, "holdbox"),
+      (not opts.delayOnClear, "nolcdelay"),
+      (not opts.scoreDrops, "nodropreward")
+    ] --> map(short).fold(" -", a & it)
+  &"Game settings: \"-s={opts.speedCurve} -r={opts.rotation}" &
+  (if optStr != " -": optStr else: "") &
+  &" --gameseed {serialize(opts.seed)}\""
 
 ################################################################################
 proc main(state: sink State) =
   var
     updateDue = false
     msg: Message
-    bus = newChannel[Message]() # Created a shared channel
+    bus = newChan[Message]() # Create a shared channel
 
   # Spawn threads
   spawn ticker(addr bus, addr state.opts)
@@ -397,13 +408,13 @@ proc main(state: sink State) =
         updateDue = false
       sleep(33)
   if state.gameOver:
-    displayMsg("Game Over! Final" & $state.stats & "\n\r" & $state.opts)
+    displayMsg(&"Game Over! Final{state.stats} \n\r{state.opts}")
     when defined(Windows):
     # This block is known to be necessary only for cmd.exe
     # but we won't discriminate between Windows users
       echo("\rPress any key to exit...")
       while true: # Ticker isn't stopped and channel buffer can be non-empty
-        msg = bus.recv()
+        bus.recv(msg)
         if msg.kind == mkCommand and msg.command == cQuit:
           break
   safelyQuit()
@@ -448,4 +459,5 @@ proc tetronimia(speedcurve: SpeedCurveKind = scNimia; rotation: RotationDir = CW
 
 when isMainModule:
   clCfg.hTabCols = @[clOptKeys, clDescrip] # hide types and default value columns
+  clCfg.version = NimblePkgVersion
   dispatch(tetronimia, help = HelpS, short = ShortS)

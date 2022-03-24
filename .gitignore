@@ -1,0 +1,8 @@
+# ignore everything ...
+**/*
+# ... except all files that have a dot
+!**/*.*
+nimcache
+nimblecache/
+**/*.exe
+**~
