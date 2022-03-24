@@ -3,9 +3,7 @@ import
   options, tables, strformat],
   threading/channels, zero_functional, cligen, gui, shufflearray
 from std/math import `^`
-
-## Autodefined by Nimble. If built using pure nim, use git tag.
-const NimblePkgVersion {.strdefine.} = staticExec "git describe --tags HEAD"
+from std/strutils import strip
 
 type
   Coord = tuple[x, y: int]
@@ -65,6 +63,8 @@ type
       of mkMovement: move: Movement
       of mkCommand: command: Command
 
+#  Static section  ############################################################
+
 func apply[T, N, U](a: array[N, T]; p: proc (x:T):U {.noSideEffect.} ): array[N, U] =
   for (i, x) in a.pairs(): result[i] = p(x)
 
@@ -77,6 +77,9 @@ func tOffsets(n: uint16): TCells =
       cell.dec()
 
 const
+  ## Autodefined by Nimble. If built using pure nim, use git tag
+  NimblePkgVersion {.strdefine.} = staticExec("git describe --tags HEAD").strip()
+
   LT = (
     rTO: [0b0000011001100000'u16].apply(tOffsets), #TO
     rTI: [0b0000111100000000'u16, 0b0010001000100010'u16].apply(tOffsets), #TI
@@ -91,6 +94,14 @@ const
     Colors: array[TetronimoKind, ForegroundColor]([fgYellow, fgCyan, fgGreen, fgRed, fgMagenta, fgBlue, fgWhite]),
     Salt: 0b01001100011100001111000001111110000001111100001111000111001101'i64
   )
+
+  DocS = &"""
+Tetronimia {NimblePkgVersion}: the only winning move is not to play
+
+Default controls:
+ Left: H, Soft drop: J|Enter, Rotate: K|Tab, Right: L,
+ Hard drop: D|Space, HoldBox: F
+ Pause: P|Esc, Exit: Q|Ctrl+C"""
 
   HelpS = {
     "help-syntax": "CLIGEN-NOHELP",
@@ -109,6 +120,7 @@ const
     "help": "Print this help text.",
     "version": "Print version and exit.",
   }.toTable()
+
   ShortS = {
     "speedcurve": 's',
     "rotation": 'r',
@@ -303,7 +315,7 @@ proc clearDelay(bus: ptr Chan[Message]; level: Natural) {.thread.} =
   sleep(toInt( 750.0 * (0.92 ^ level) ))
   bus[].send(Message(kind: mkCommand, command: cClearDelay))
 
-################################################################################
+# [De]serializing options, seed generation ####################################
 proc genSeed(): int64 =
   let now = times.getTime()
   (convert(Seconds, Nanoseconds, now.toUnix) + now.nanosecond)
@@ -334,7 +346,7 @@ proc `$`(opts: Options): string {.noinit, inline.} =
   (if optStr != " -": optStr else: "") &
   &" --gameseed {serialize(opts.seed)}\""
 
-################################################################################
+###############################################################################
 proc main(state: sink State) =
   var
     updateDue = false
@@ -432,14 +444,11 @@ proc initState(opts: sink Options, charset: sink string): State =
   State(tetros: tetros, pile: pile, stats: stats, curT: curT, nextT: nextT,
         heldT: heldT, opts: opts, ui: ui)
 
-proc tetronimia(speedcurve: SpeedCurveKind = scNimia; rotation: RotationDir = CW; nohdrop: bool = false, noghost: bool = false, holdbox: bool = false, nolcdelay: bool = false, nodropreward: bool = false, nocolor: bool = false; charset = "", gameseed = "") =
-  ## Tetronimia: the only winning move is not to play
-  ##
-  ## Default controls:
-  ##  Left: H, Soft drop: J|Enter, Rotate: K|Tab, Right: L,
-  ##  Hard drop: D|Space, HoldBox: F
-  ##  Pause: P|Esc, Exit: Q|Ctrl+C
-  ##
+proc tetronimia(speedcurve: SpeedCurveKind = scNimia; rotation: RotationDir = CW;
+    nohdrop: bool = false, noghost: bool = false, holdbox: bool = false,
+    nolcdelay: bool = false, nodropreward: bool = false, nocolor: bool = false;
+    charset = "", gameseed = "") =
+
   var opts: Options
   opts.speedCurve = speedcurve
   opts.rotation = rotation
@@ -460,4 +469,4 @@ proc tetronimia(speedcurve: SpeedCurveKind = scNimia; rotation: RotationDir = CW
 when isMainModule:
   clCfg.hTabCols = @[clOptKeys, clDescrip] # hide types and default value columns
   clCfg.version = NimblePkgVersion
-  dispatch(tetronimia, help = HelpS, short = ShortS)
+  dispatch(tetronimia, help = HelpS, short = ShortS, doc = DocS)
