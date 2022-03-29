@@ -30,26 +30,41 @@ No complicated rotation systems, no wall kicks, no music, no gui, no net usage, 
 Tetronimia does all of the above. Nothing more. It's ideal. Did I mention you can't win?
 
 ## How
-### Installation
-Download a binary from the release assets or compile the game yourself.
 
+### Installation
+Download a binary from the [release assets](https://github.com/indiscipline/tetronimia/releases/latest) or compile the game yourself.
+
+#### Package managers
+Currently, Tetronimia is available from the [AUR repository](https://aur.archlinux.org/packages/tetronimia) for Arch Linux and its derivative distros. Install with `yay` or your favourite AUR helper, such as [pakku](https://github.com/zqqw/pakku) or [paru](https://github.com/morganamilo/paru).
+
+```
+yay -S tetronimia
+```
+
+#### Building manually
 Since v0.2.0, Tetronimia supports stable Nim compiler >= 1.4.6. It relies on the new official [threading](https://github.com/nim-lang/threading) package for the `Channel` implementation (earlier experimental implementation from the Nim's devel branch, on which we relied previously, was dropped). Use `choosenim` to install and manage the Nim compilation toolchain.
 
-To install the dependencies:
+To install the dependencies and build with Nim's package manager Nimble:
 
 ```
-nimble install threading
-nimble install cligen
-nimble install zero_functional
+git clone https://github.com/indiscipline/tetronimia
+cd tetronimia
+nimble build
+./tetronimia -h
 ```
 
-To build the executable:
+Or, you can install the dependencies in a separate pass:
+
+```
+nimble install threading cligen zero_functional
+```
+
+...and then build with Nim:
 
 ```
 git clone https://github.com/indiscipline/tetronimia
 cd tetronimia
 nim build
-./tetronimia -h
 ```
 
 ### Playing
