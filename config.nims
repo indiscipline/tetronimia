@@ -8,8 +8,8 @@ if defined(release) or defined(danger):
   --passC:"-flto"
   --passL:"-flto"
 
-const
-  projName = "tetronimia"
+const projectName = "tetronimia"
 
+############ Tasks
 task build, "Build executable":
-  selfExec(&"c --define:release --out:{projName} src/{projName}.nim")
+  selfExec(&"c --define:release --out:{projectName} src/{projectName}.nim")
