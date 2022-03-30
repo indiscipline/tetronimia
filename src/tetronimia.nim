@@ -1,6 +1,5 @@
 import
-  std/[random, times, lists, os, threadpool, locks, terminal, base64,
-  options, tables, strformat],
+  std/[random, times, lists, os, locks, terminal, base64, options, tables, strformat],
   threading/channels, zero_functional, cligen, gui, shufflearray
 from std/math import `^`
 from std/strutils import strip
@@ -63,8 +62,24 @@ type
       of mkMovement: move: Movement
       of mkCommand: command: Command
 
-#  Static section  ############################################################
+#  Type helpers  ##############################################################
+template msg(k: MessageKind; m: Movement): Message = Message(kind: k, move: m)
 
+template msg(k: MessageKind; c: Command): Message = Message(kind: k, command: c)
+
+#  Required since the user input thread never finishes  #######################
+when not defined(windows):
+  import std/[exitprocs, posix, termios]
+  let origState = block:
+    var oldMode: Termios
+    let fh = stdin.getFileHandle
+    discard fh.tcGetAttr(addr oldMode)
+    oldMode
+  addExitProc do():
+    let fh = stdin.getFileHandle()
+    discard fh.tcSetAttr(TCSADRAIN, unsafeaddr origState)
+
+#  Static section  ############################################################
 func apply[T, N, U](a: array[N, T]; p: proc (x:T):U {.noSideEffect.} ): array[N, U] =
   for (i, x) in a.pairs(): result[i] = p(x)
 
@@ -173,7 +188,7 @@ func `+`(pos: Coord, offsets: TCells): TCells {.inline.} =
   for i in 0..3:
     result[i] = (x: offsets[i].x + pos.x, y: offsets[i].y + pos.y)
 
-###############################################################################
+#  Pile impl  #################################################################
 func get(p: Pile; pos: Coord): bool =
   ## Check if the cell is in the Pile, coordinates relative to the field
   let y = FieldSize.h - (pos.y + 1) # invert vertical coord
@@ -188,6 +203,7 @@ proc add(p: var Pile; cells: TCells, kind: TetronimoKind) =
 
 template clearFull(p: var Pile): int =
   p.retainIf( proc(x: Pile.T): bool = not (x --> all(it.k != cEmpty)) )
+
 ###############################################################################
 func isValidMove(t: Tetronimo; newPos: Coord; newRotation: int; p: Pile): bool =
   let
@@ -196,11 +212,6 @@ func isValidMove(t: Tetronimo; newPos: Coord; newRotation: int; p: Pile): bool =
   result = inside and not (occupies --> exists(p.get(it)))
 
 func isValidMove(t: Tetronimo; p: Pile): bool = isValidMove(t, t.pos, t.rotation, p)
-
-proc safelyQuit() {.noconv.} =
-  resetAttributes()
-  deinit()
-  quit(0)
 
 func calcMove(t: Tetronimo; move: Movement): Tetronimo {.noinit.} =
   result.kind = t.kind
@@ -276,44 +287,47 @@ proc lockAndAdvance(s: var State): bool =
   else:
     false
 
-proc ticker(bus: ptr Chan[Message]; opts: ptr Options) {.thread.} =
+proc ticker(arg: tuple[bus: ptr Chan[Message], opts: ptr Options,
+    gameOver: ptr bool]) {.thread.} =
   var dp: int
-  while true:
-    withLock(opts[].lock):
-      dp = opts[].descendPeriod
+  while not arg.gameOver[]:
+    withLock(arg.opts[].lock):
+      dp = arg.opts[].descendPeriod
     sleep(dp)
-    bus[].send(Message(kind: mkMovement, move: mTick))
+    arg.bus[].send(msg(mkMovement, mTick))
 
-proc waitForInput(bus: ptr Chan[Message]; opts: ptr Options; gameOver: ptr bool) {.thread.} =
+proc waitForInput(arg: tuple[bus: ptr Chan[Message], opts: ptr Options,
+    gameOver: ptr bool]) {.thread.} =
   var
     c: char
     msg: Message
   while true:
     c = getch()
-    if not gameOver[]:
+    if not arg.gameOver[]:
       case c:
-        of 'h', 'H': msg = Message(kind: mkMovement, move: mLeft)
-        of 'l', 'L': msg = Message(kind: mkMovement, move: mRight)
-        of 'j', 'J', char(13): msg = Message(kind: mkMovement, move: mDown)
-        of 'k', 'K', char(9): msg =
-          Message(kind: mkMovement, move: if opts[].rotation == CCW: mRotateCcw else: mRotateCw)
-        of 'd', 'D', ' ': msg =
-          Message(kind: mkMovement, move: if opts[].hardDrop: mDrop else: mDown)
-        of 'f', 'F': msg = Message(kind: mkCommand, command: cHold)
-        of 'p', 'P', char(27): msg = Message(kind: mkCommand, command: cPause)
-        of 'q', 'Q', char(3): msg = Message(kind: mkCommand, command: cQuit)
+        of 'h', 'H': arg.bus[].send msg(mkMovement, mLeft)
+        of 'l', 'L': arg.bus[].send msg(mkMovement, mRight)
+        of 'j', 'J', char(13): arg.bus[].send msg(mkMovement, mDown)
+        of 'k', 'K', char(9): arg.bus[].send(
+          msg(mkMovement, (if arg.opts[].rotation == CCW: mRotateCcw else: mRotateCw)))
+        of 'd', 'D', ' ': arg.bus[].send(
+          msg(mkMovement, (if arg.opts[].hardDrop: mDrop else: mDown)))
+        of 'f', 'F': arg.bus[].send msg(mkCommand, cHold)
+        of 'p', 'P', char(27): arg.bus[].send msg(mkCommand, cPause)
+        of 'q', 'Q', char(3):
+          arg.bus[].send(msg(mkCommand, cQuit))
+          when not defined(windows): break # on Windows we want to request a keypress after gameOver
         of char(26):
-          when defined(Windows): continue else: stdout.write(char(26))
+          when defined(windows): continue else: stdout.write(char(26))
         else: continue
-      bus[].send(msg)
-    else:
-      bus[].send(Message(kind: mkCommand, command: cQuit))
+    else: # if gameOver any input quits
+      arg.bus[].send(msg(mkCommand, cQuit))
       break
 
-proc clearDelay(bus: ptr Chan[Message]; level: Natural) {.thread.} =
-  bus[].send(Message(kind: mkCommand, command: cClearDelay))
-  sleep(toInt( 750.0 * (0.92 ^ level) ))
-  bus[].send(Message(kind: mkCommand, command: cClearDelay))
+proc clearDelay(arg: tuple[bus: ptr Chan[Message]; level: Natural]) {.thread.} =
+  arg.bus[].send(msg(mkCommand, cClearDelay)) # =pause
+  sleep(toInt( 750.0 * (0.92 ^ arg.level) ))
+  arg.bus[].send(msg(mkCommand, cClearDelay)) # =unpause
 
 # [De]serializing options, seed generation ####################################
 proc genSeed(): int64 =
@@ -352,10 +366,12 @@ proc main(state: sink State) =
     updateDue = false
     msg: Message
     bus = newChan[Message]() # Create a shared channel
+    thInput, thTicker: Thread[(ptr Chan[Message], ptr Options, ptr bool)]
+    thDelay: Thread[(ptr Chan[Message], Natural)]
 
   # Spawn threads
-  spawn ticker(addr bus, addr state.opts)
-  spawn waitForInput(addr bus, addr state.opts, addr state.gameOver)
+  thTicker.createThread(ticker, (addr bus, addr state.opts, addr state.gameOver))
+  thInput.createThread(waitForInput, (addr bus, addr state.opts, addr state.gameOver))
 
   block mainLoop:
     while true:
@@ -378,6 +394,7 @@ proc main(state: sink State) =
                   state.ghostT.updateGhost(state.curT, state.pile) # update ghost
                   state.usedHold = true
             of cQuit:
+              state.gameOver = true
               break mainLoop
           updateDue = not state.paused
         elif not state.paused: # move only when not paused
@@ -409,7 +426,7 @@ proc main(state: sink State) =
           state.stats.updateStats(state.opts, cleared)
           state.ghostT.updateGhost(state.curT, state.pile) # replace ghost to avoid lag
           if state.opts.delayOnClear:
-            spawn clearDelay(addr bus, state.stats.level)
+            thDelay.createThread(clearDelay, (addr bus, Natural(state.stats.level)))
         var field = buildField(state.pile)
         if state.opts.ghost:
           field = field.addTetronimo(state.ghostT, ghost = true)
@@ -418,18 +435,19 @@ proc main(state: sink State) =
         state.ui.refresh(state.opts.color)
         refreshStatus(state.nextT, state.heldT, state.stats, state.opts)
         updateDue = false
-      sleep(33)
+
+      sleep(33) # ui tick
   if state.gameOver:
     displayMsg(&"Game Over! Final{state.stats} \n\r{state.opts}")
-    when defined(Windows):
+    when defined(windows):
     # This block is known to be necessary only for cmd.exe
     # but we won't discriminate between Windows users
       echo("\rPress any key to exit...")
-      while true: # Ticker isn't stopped and channel buffer can be non-empty
+      while true: # thTicker might be running and channel buffer can be non-empty
         bus.recv(msg)
         if msg.kind == mkCommand and msg.command == cQuit:
           break
-  safelyQuit()
+  thTicker.joinThread() # can't join thInput blocked on user input
 
 proc initState(opts: sink Options, charset: sink string): State =
   var tetros = nextTetronimo
@@ -439,7 +457,7 @@ proc initState(opts: sink Options, charset: sink string): State =
     stats = (var s: Stats; s.updateStats(opts, 0); s)
     pile = initShuffleArray[FieldSize.h, array[FieldSize.w, Cell]]()
     heldT = (var t: Tetronimo; t.kind = rand(TO..TT); t)
-    ui = guiInit(buildField(pile).addTetronimo(curT), charset)
+    ui = uiInit(buildField(pile).addTetronimo(curT), charset)
   refreshStatus(nextT, heldT, stats, opts)
   State(tetros: tetros, pile: pile, stats: stats, curT: curT, nextT: nextT,
         heldT: heldT, opts: opts, ui: ui)
@@ -448,6 +466,10 @@ proc tetronimia(speedcurve: SpeedCurveKind = scNimia; rotation: RotationDir = CW
     nohdrop: bool = false, noghost: bool = false, holdbox: bool = false,
     nolcdelay: bool = false, nodropreward: bool = false, nocolor: bool = false;
     charset = "", gameseed = "") =
+  proc safelyQuit() {.noconv.} =
+    resetAttributes()
+    deinit()
+    quit(0)
 
   var opts: Options
   opts.speedCurve = speedcurve
@@ -461,7 +483,7 @@ proc tetronimia(speedcurve: SpeedCurveKind = scNimia; rotation: RotationDir = CW
   opts.seed = if gameseed != "": deserialize(gameseed)
               else: genSeed()
   randomize(opts.seed)
-  setControlCHook(safelyQuit)
+  setControlCHook(safelyQuit) # necessary for Windows
   opts.lock.initLock() # necessary for Windows?
   main(initState(opts, charset))
   safelyQuit()

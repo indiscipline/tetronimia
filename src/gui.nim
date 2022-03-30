@@ -64,7 +64,7 @@ proc parseCharset*(cs: string): array[4, char] =
   if cs.len in 1..2: stderr.write("The charset is too short. Using the defaut one.")
   elif cs.len >= 3: result[1..3] = cs[0..2]
 
-proc guiInit*(field: sink Field, charset: string): UI =
+proc uiInit*(field: sink Field, charset: string): UI =
   hideCursor()
   result.cellChars = parseCharset(charset)
   result.update(field)
