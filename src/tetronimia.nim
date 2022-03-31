@@ -1,6 +1,6 @@
 import
   std/[random, times, lists, os, locks, terminal, base64, options, tables, strformat],
-  threading/channels, zero_functional, cligen, gui, shufflearray
+  threading/[channels, atomics], zero_functional, cligen, gui, shufflearray
 from std/math import `^`
 from std/strutils import strip
 
@@ -49,7 +49,7 @@ type
     paused: bool
     usedHold: bool
     stats: Stats
-    gameOver: bool
+    gameOver: Atomic[bool]
 
   MessageKind = enum
     mkCommand, mkMovement
@@ -149,6 +149,38 @@ Default controls:
     "gameseed": 'g',
     "version": 'v',
   }.toTable()
+
+
+#  [De]serializing options, seed generation  ##################################
+proc genSeed(): int64 =
+  let now = times.getTime()
+  (convert(Seconds, Nanoseconds, now.toUnix) + now.nanosecond)
+
+proc serialize(i: int64): string =
+  encode(cast[array[8, byte]](i xor Rules.Salt))
+
+func deserialize(s: string): int64 =
+  var a: array[8, char]
+  var i = 0
+  let d = decode(s)
+  while i < 8 and i < d.len:
+    a[i] = d[i]
+    i.inc
+  cast[int64](a) xor Rules.Salt
+
+proc `$`(opts: Options): string {.noinit, inline.} =
+  func short(t: tuple[o: bool; key: string]): string =
+    if t.o: $ShortS[t.key] else: ""
+  let optStr: string = [
+      (not opts.hardDrop, "nohdrop"),
+      (not opts.ghost, "noghost"),
+      (opts.holdBox, "holdbox"),
+      (not opts.delayOnClear, "nolcdelay"),
+      (not opts.scoreDrops, "nodropreward")
+    ] --> map(short).fold(" -", a & it)
+  &"Game settings: \"-s={opts.speedCurve} -r={opts.rotation}" &
+  (if optStr != " -": optStr else: "") &
+  &" --gameseed {serialize(opts.seed)}\""
 
 ###############################################################################
 func tCells(tk: TetronimoKind; rotation: int): TCells =
@@ -287,23 +319,24 @@ proc lockAndAdvance(s: var State): bool =
   else:
     false
 
+#  Threads  ###################################################################
 proc ticker(arg: tuple[bus: ptr Chan[Message], opts: ptr Options,
-    gameOver: ptr bool]) {.thread.} =
+    gameOver: ptr Atomic[bool]]) {.thread.} =
   var dp: int
-  while not arg.gameOver[]:
+  while not arg.gameOver[].load():
     withLock(arg.opts[].lock):
       dp = arg.opts[].descendPeriod
     sleep(dp)
     arg.bus[].send(msg(mkMovement, mTick))
 
 proc waitForInput(arg: tuple[bus: ptr Chan[Message], opts: ptr Options,
-    gameOver: ptr bool]) {.thread.} =
+    gameOver: ptr Atomic[bool]]) {.thread.} =
   var
     c: char
     msg: Message
   while true:
     c = getch()
-    if not arg.gameOver[]:
+    if not arg.gameOver[].load():
       case c:
         of 'h', 'H': arg.bus[].send msg(mkMovement, mLeft)
         of 'l', 'L': arg.bus[].send msg(mkMovement, mRight)
@@ -316,7 +349,8 @@ proc waitForInput(arg: tuple[bus: ptr Chan[Message], opts: ptr Options,
         of 'p', 'P', char(27): arg.bus[].send msg(mkCommand, cPause)
         of 'q', 'Q', char(3):
           arg.bus[].send(msg(mkCommand, cQuit))
-          when not defined(windows): break # on Windows we want to request a keypress after gameOver
+          when not defined(windows):
+            break # on Windows we want to request a keypress after gameOver
         of char(26):
           when defined(windows): continue else: stdout.write(char(26))
         else: continue
@@ -329,44 +363,13 @@ proc clearDelay(arg: tuple[bus: ptr Chan[Message]; level: Natural]) {.thread.} =
   sleep(toInt( 750.0 * (0.92 ^ arg.level) ))
   arg.bus[].send(msg(mkCommand, cClearDelay)) # =unpause
 
-# [De]serializing options, seed generation ####################################
-proc genSeed(): int64 =
-  let now = times.getTime()
-  (convert(Seconds, Nanoseconds, now.toUnix) + now.nanosecond)
-
-proc serialize(i: int64): string =
-  encode(cast[array[8, byte]](i xor Rules.Salt))
-
-func deserialize(s: string): int64 =
-  var a: array[8, char]
-  var i = 0
-  let d = decode(s)
-  while i < 8 and i < d.len:
-    a[i] = d[i]
-    i.inc
-  cast[int64](a) xor Rules.Salt
-
-proc `$`(opts: Options): string {.noinit, inline.} =
-  func short(t: tuple[o: bool; key: string]): string =
-    if t.o: $ShortS[t.key] else: ""
-  let optStr: string = [
-      (not opts.hardDrop, "nohdrop"),
-      (not opts.ghost, "noghost"),
-      (opts.holdBox, "holdbox"),
-      (not opts.delayOnClear, "nolcdelay"),
-      (not opts.scoreDrops, "nodropreward")
-    ] --> map(short).fold(" -", a & it)
-  &"Game settings: \"-s={opts.speedCurve} -r={opts.rotation}" &
-  (if optStr != " -": optStr else: "") &
-  &" --gameseed {serialize(opts.seed)}\""
-
 ###############################################################################
 proc main(state: sink State) =
   var
     updateDue = false
     msg: Message
     bus = newChan[Message]() # Create a shared channel
-    thInput, thTicker: Thread[(ptr Chan[Message], ptr Options, ptr bool)]
+    thInput, thTicker: Thread[(ptr Chan[Message], ptr Options, ptr Atomic[bool])]
     thDelay: Thread[(ptr Chan[Message], Natural)]
 
   # Spawn threads
@@ -394,7 +397,7 @@ proc main(state: sink State) =
                   state.ghostT.updateGhost(state.curT, state.pile) # update ghost
                   state.usedHold = true
             of cQuit:
-              state.gameOver = true
+              state.gameOver.store(true)
               break mainLoop
           updateDue = not state.paused
         elif not state.paused: # move only when not paused
@@ -411,13 +414,13 @@ proc main(state: sink State) =
                 state.curT = updatedT
                 if msg.move == mDown and state.opts.scoreDrops: state.stats.scoreSoftDrop()
               elif not lockAndAdvance(state): # Can't descend
-                state.gameOver = true
+                state.gameOver.store(true)
                 break mainLoop # Game Over!
             of mDrop:
               if state.opts.scoreDrops: state.stats.scoreHardDrop(state.curT.pos.y)
               state.curT = state.ghostT
               if not lockAndAdvance(state):
-                state.gameOver = true
+                state.gameOver.store(true)
                 break mainLoop # Game Over!
 
       if updateDue:
@@ -437,7 +440,7 @@ proc main(state: sink State) =
         updateDue = false
 
       sleep(33) # ui tick
-  if state.gameOver:
+  if state.gameOver.load():
     displayMsg(&"Game Over! Final{state.stats} \n\r{state.opts}")
     when defined(windows):
     # This block is known to be necessary only for cmd.exe
