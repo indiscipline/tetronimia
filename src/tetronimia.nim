@@ -1,5 +1,5 @@
 import
-  std/[random, times, lists, os, locks, terminal, base64, options, tables, strformat],
+  std/[random, times, lists, os, terminal, base64, options, tables, strformat],
   threading/[channels, atomics], zero_functional, cligen, gui, shufflearray
 from std/math import `^`
 from std/strutils import strip
@@ -28,8 +28,6 @@ type
     scNimia = "n", scWorld = "w"
 
   Options = object
-    lock: Lock
-    descendPeriod {.guard: lock.}: int
     speedCurve: SpeedCurveKind
     rotation: RotationDir
     hardDrop: bool
@@ -49,6 +47,7 @@ type
     paused: bool
     usedHold: bool
     stats: Stats
+    descendPeriod: Atomic[int]
     gameOver: Atomic[bool]
 
   MessageKind = enum
@@ -280,16 +279,18 @@ template refreshStatus(next, held: Tetronimo; stats: Stats; opts: Options) =
       none((string, ForegroundColor))
     ), $stats, opts.color)
 
-proc updateStats(s: var Stats; opts: var Options; cleared: Natural) {.inline.} =
-  s.cleared.inc(cleared)
-  s.score.inc(Rules.LCScoring[cleared] * s.level)
+func newDescendPeriod(level: int; sc: SpeedCurveKind): int {.inline.} =
+  case sc:
+    of scNimia: toInt(1000.0 * (0.88 ^ level))
+    of scWorld: toInt(1000.0 * ((0.8 - 0.007 * ((toFloat(level) - 1.0))) ^ (level - 1)))
+
+proc updateAndLvlUp(s: var Stats; newCleared: Natural): bool =
+  s.cleared.inc(newCleared)
+  s.score.inc(Rules.LCScoring[newCleared] * s.level)
   let newLevel = 1 + s.cleared div 10
   if newLevel > s.level:
     s.level = newLevel
-    withLock opts.lock:
-      opts.descendPeriod = case opts.speedCurve:
-        of scNimia: toInt(1000.0 * (0.88 ^ s.level))
-        of scWorld: toInt(1000.0 * ((0.8 - 0.007 * ((toFloat(s.level) - 1.0))) ^ (s.level - 1)))
+    result = true
 
 template scoreHardDrop(s: var Stats; fromY: int) =
   ## Doesn't matter how long's the drop, but how soon it happens
@@ -320,13 +321,10 @@ proc lockAndAdvance(s: var State): bool =
     false
 
 #  Threads  ###################################################################
-proc ticker(arg: tuple[bus: ptr Chan[Message], opts: ptr Options,
+proc ticker(arg: tuple[bus: ptr Chan[Message]; descendPeriod: ptr Atomic[int],
     gameOver: ptr Atomic[bool]]) {.thread.} =
-  var dp: int
   while not arg.gameOver[].load():
-    withLock(arg.opts[].lock):
-      dp = arg.opts[].descendPeriod
-    sleep(dp)
+    sleep(arg.descendPeriod[].load())
     arg.bus[].send(msg(mkMovement, mTick))
 
 proc waitForInput(arg: tuple[bus: ptr Chan[Message], opts: ptr Options,
@@ -369,11 +367,12 @@ proc main(state: sink State) =
     updateDue = false
     msg: Message
     bus = newChan[Message]() # Create a shared channel
-    thInput, thTicker: Thread[(ptr Chan[Message], ptr Options, ptr Atomic[bool])]
+    thInput: Thread[(ptr Chan[Message], ptr Options, ptr Atomic[bool])]
+    thTicker: Thread[(ptr Chan[Message], ptr Atomic[int], ptr Atomic[bool])]
     thDelay: Thread[(ptr Chan[Message], Natural)]
 
   # Spawn threads
-  thTicker.createThread(ticker, (addr bus, addr state.opts, addr state.gameOver))
+  thTicker.createThread(ticker, (addr bus, addr state.descendPeriod, addr state.gameOver))
   thInput.createThread(waitForInput, (addr bus, addr state.opts, addr state.gameOver))
 
   block mainLoop:
@@ -426,7 +425,10 @@ proc main(state: sink State) =
       if updateDue:
         let cleared = state.pile.clearFull()
         if cleared > 0:
-          state.stats.updateStats(state.opts, cleared)
+          if state.stats.updateAndLvlUp(cleared): # Leveling up
+            state.descendPeriod.store(
+              newDescendPeriod(state.stats.level, state.opts.speedCurve)
+            )
           state.ghostT.updateGhost(state.curT, state.pile) # replace ghost to avoid lag
           if state.opts.delayOnClear:
             thDelay.createThread(clearDelay, (addr bus, Natural(state.stats.level)))
@@ -457,13 +459,14 @@ proc initState(opts: sink Options, charset: sink string): State =
   let
     curT = tetros.next()
     nextT = tetros.next()
-    stats = (var s: Stats; s.updateStats(opts, 0); s)
+    stats = (cleared: 0, score: 0, level: 1)
     pile = initShuffleArray[FieldSize.h, array[FieldSize.w, Cell]]()
     heldT = (var t: Tetronimo; t.kind = rand(TO..TT); t)
     ui = uiInit(buildField(pile).addTetronimo(curT), charset)
+    dp = Atomic(newDescendPeriod(1, opts.speedCurve))
   refreshStatus(nextT, heldT, stats, opts)
   State(tetros: tetros, pile: pile, stats: stats, curT: curT, nextT: nextT,
-        heldT: heldT, opts: opts, ui: ui)
+        heldT: heldT, opts: opts, ui: ui, descendPeriod: dp)
 
 proc tetronimia(speedcurve: SpeedCurveKind = scNimia; rotation: RotationDir = CW;
     nohdrop: bool = false, noghost: bool = false, holdbox: bool = false,
@@ -487,7 +490,6 @@ proc tetronimia(speedcurve: SpeedCurveKind = scNimia; rotation: RotationDir = CW
               else: genSeed()
   randomize(opts.seed)
   setControlCHook(safelyQuit) # necessary for Windows
-  opts.lock.initLock() # necessary for Windows?
   main(initState(opts, charset))
   safelyQuit()
 
