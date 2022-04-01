@@ -1,4 +1,4 @@
-# Tetronimia
+# Tetronimia <img src="assets/tetronimia.svg" align="right" alt="Tetronimia logo" width="64"/>
 **"The only winning move is not to play"**
 
 *That* game of falling blocky thingies.
