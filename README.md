@@ -42,33 +42,28 @@ yay -S tetronimia
 ```
 
 #### Building manually
-Since v0.2.0, Tetronimia supports stable Nim compiler >= 1.4.6. It relies on the new official [threading](https://github.com/nim-lang/threading) package for the `Channel` implementation (earlier experimental implementation from the Nim's devel branch, on which we relied previously, was dropped). Use `choosenim` to install and manage the Nim compilation toolchain.
+Since v0.2.0, Tetronimia supports stable Nim compiler >= 1.4.6. It has minimal dependencies: the code relies on the new official [threading](https://github.com/nim-lang/threading) package for the `Channel` implementation (earlier experimental implementation from the Nim's devel branch, on which we relied previously, was dropped), amazing [cligen](https://github.com/c-blake/cligen) and very useful [zero_functional](https://github.com/zero-functional/zero-functional/) libraries. Use `choosenim` to install and manage the Nim compilation toolchain.
 
-To install the dependencies and build with Nim's package manager Nimble:
+To install with Nim's package manager Nimble:
+
+```
+nimble install https://github.com/indiscipline/tetronimia
+tetronimia -h
+```
+
+The commands above automatically downloads the latest tagged release, installs all the dependencies, and builds the binary, which should be accessible, if Nimble's `bin` directory is in your PATH environment variable (it probably is).
+
+Another option is to download the latest source manually and build with Nimble:
 
 ```
 git clone https://github.com/indiscipline/tetronimia
 cd tetronimia
-nimble build
+nimble build 
 ./tetronimia -h
 ```
 
-Or, you can install the dependencies in a separate pass:
-
-```
-nimble install threading cligen zero_functional
-```
-
-...and then build with Nim:
-
-```
-git clone https://github.com/indiscipline/tetronimia
-cd tetronimia
-nim build
-```
-
 ### Playing
-The game has a basic set of options, available via `--help` or `-h` argument (thanks to amazing [cligen](https://github.com/c-blake/cligen)).
+The game has a basic set of options, available via `--help` or `-h` argument.
 
 The defaults are chosen to be "perfectly balanced". If you think you're not good enough, use the Hold box (`-b`, off by default). If you think otherwise, choose the nastier `-s w` speed curve, turn off the Hard Drop (`-D`), the Ghost (`-G`) and that tiny delay on line clear (`-L`). You'll suffer harder, but not for long.
 
