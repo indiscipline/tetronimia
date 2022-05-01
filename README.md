@@ -3,7 +3,7 @@
 
 *That* game of falling blocky thingies.
 
-![Tetronimia gameplay screencapture](gameplay-linux.gif)
+![Tetronimia gameplay screencapture](assets/gameplay-linux.gif)
 
 **[Initial announcement blog post with some implementation trivia](https://indiscipline.github.io/post/tetronimia/)**
 

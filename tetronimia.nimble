@@ -3,7 +3,7 @@ from std/strutils import strip
 
 # Package
 
-version       = "0.2.2"
+version       = "0.3.0"
 author        = "Kirill I"
 description   = "Nim implementation of tetris"
 license       = "GPL-3.0-or-later"
@@ -12,7 +12,7 @@ bin           = @["tetronimia"]
 
 
 # Dependencies
-requires "nim >= 1.4.6", "threading >= 0.1.0", "cligen >= 1.5.4", "zero_functional >= 1.2.1"
+requires "nim >= 1.4.6", "threading >= 0.1.0", "cligen >= 1.5.4", "zero_functional >= 1.2.1", "illwill >= 0.3.0"
 
 task debug, "Build debug":
   let git = staticExec("git describe --tags HEAD").strip()

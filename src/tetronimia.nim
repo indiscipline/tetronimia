@@ -1,8 +1,11 @@
 import
-  std/[random, times, lists, os, terminal, base64, options, tables, strformat],
-  threading/[channels, atomics], zero_functional, cligen, gui, shufflearray
+  std/[random, times, lists, os, terminal, base64, options, tables, strformat, exitprocs],
+  threading/[channels, atomics],
+  pkg/[zero_functional, cligen, cligen/argcvt],
+  kbd, gui, shufflearray
 from std/math import `^`
 from std/strutils import strip
+from illwill import getKey, Key, illwillInit, illwillDeinit
 
 type
   Coord = tuple[x, y: int]
@@ -37,6 +40,7 @@ type
     scoreDrops: bool
     color: bool
     seed: int64
+    kbdPreset: KbdPreset
 
   State = object
     ui: UI
@@ -66,18 +70,6 @@ template msg(k: MessageKind; m: Movement): Message = Message(kind: k, move: m)
 
 template msg(k: MessageKind; c: Command): Message = Message(kind: k, command: c)
 
-#  Required since the user input thread never finishes  #######################
-when not defined(windows):
-  import std/[exitprocs, posix, termios]
-  let origState = block:
-    var oldMode: Termios
-    let fh = stdin.getFileHandle
-    discard fh.tcGetAttr(addr oldMode)
-    oldMode
-  addExitProc do():
-    let fh = stdin.getFileHandle()
-    discard fh.tcSetAttr(TCSADRAIN, unsafeaddr origState)
-
 #  Static section  ############################################################
 func apply[T, N, U](a: array[N, T]; p: proc (x:T):U {.noSideEffect.} ): array[N, U] =
   for (i, x) in a.pairs(): result[i] = p(x)
@@ -93,6 +85,8 @@ func tOffsets(n: uint16): TCells =
 const
   ## Autodefined by Nimble. If built using pure nim, use git tag
   NimblePkgVersion {.strdefine.} = staticExec("git describe --tags HEAD").strip()
+
+  UITick = 33
 
   LT = (
     rTO: [0b0000011001100000'u16].apply(tOffsets), #TO
@@ -112,10 +106,20 @@ const
   DocS = &"""
 Tetronimia {NimblePkgVersion}: the only winning move is not to play
 
-Default controls:
+Default controls (equal to --kbd=vim):
  Left: H, Soft drop: J|Enter, Rotate: K|Tab, Right: L,
  Hard drop: D|Space, HoldBox: F
  Pause: P|Esc, Exit: Q|Ctrl+C"""
+
+  KbdS = fmt"""Keyboard controls. Takes a name of a built-in preset or a string with
+the custom keybindings. CtrlC always exits, so "Exit" can be omitted.
+Built-in presets and their expanded form:
+ vim = {KbdPresetVim}
+ emacs = {KbdPresetEmacs}
+ wasd = {KbdPresetWASD}
+ casual = {KbdPresetCasual}
+Valid keys for user presets: printable characters, escape, enter, tab, space,
+arrow keys, pgup, pgdown, home, end, insert, delete, backspace."""
 
   HelpS = {
     "help-syntax": "CLIGEN-NOHELP",
@@ -131,6 +135,7 @@ Default controls:
     "nodropreward": "Disable rewarding soft and hard drops.",
     "nocolor": "Disable the coloring.",
     "gameseed": "Initialize random generator (use for competitive replay).",
+    "kbd": KbdS,
     "help": "Print this help text.",
     "version": "Print version and exit.",
   }.toTable()
@@ -145,10 +150,10 @@ Default controls:
     "nolcdelay": 'L',
     "nodropreward": 'R',
     "nocolor": 'M',
+    "kbd": 'k',
     "gameseed": 'g',
     "version": 'v',
   }.toTable()
-
 
 #  [De]serializing options, seed generation  ##################################
 proc genSeed(): int64 =
@@ -330,31 +335,34 @@ proc ticker(arg: tuple[bus: ptr Chan[Message]; descendPeriod: ptr Atomic[int],
 proc waitForInput(arg: tuple[bus: ptr Chan[Message], opts: ptr Options,
     gameOver: ptr Atomic[bool]]) {.thread.} =
   var
-    c: char
+    c = illwill.Key.None
     msg: Message
+  let k = arg.opts[].kbdPreset
   while true:
-    c = getch()
+    c = getKey()
     if not arg.gameOver[].load():
-      case c:
-        of 'h', 'H': arg.bus[].send msg(mkMovement, mLeft)
-        of 'l', 'L': arg.bus[].send msg(mkMovement, mRight)
-        of 'j', 'J', char(13): arg.bus[].send msg(mkMovement, mDown)
-        of 'k', 'K', char(9): arg.bus[].send(
+      if c in k.Left: arg.bus[].send msg(mkMovement, mLeft)
+      elif c in k.Right: arg.bus[].send msg(mkMovement, mRight)
+      elif c in k.Down: arg.bus[].send msg(mkMovement, mDown)
+      elif c in k.Rotate: arg.bus[].send(
           msg(mkMovement, (if arg.opts[].rotation == CCW: mRotateCcw else: mRotateCw)))
-        of 'd', 'D', ' ': arg.bus[].send(
+      elif c in k.Drop: arg.bus[].send(
           msg(mkMovement, (if arg.opts[].hardDrop: mDrop else: mDown)))
-        of 'f', 'F': arg.bus[].send msg(mkCommand, cHold)
-        of 'p', 'P', char(27): arg.bus[].send msg(mkCommand, cPause)
-        of 'q', 'Q', char(3):
+      elif c in k.Hold: arg.bus[].send msg(mkCommand, cHold)
+      elif c in k.Pause + {illwill.Key.CtrlZ}: arg.bus[].send msg(mkCommand, cPause)
+      elif c in k.Exit:
           arg.bus[].send(msg(mkCommand, cQuit))
           when not defined(windows):
             break # on Windows we want to request a keypress after gameOver
-        of char(26):
-          when defined(windows): continue else: stdout.write(char(26))
-        else: continue
+      else: discard
     else: # if gameOver any input quits
-      arg.bus[].send(msg(mkCommand, cQuit))
-      break
+      when defined(windows):
+        if c notin {illwill.Key.None, illwill.Key.Mouse}:
+          arg.bus[].send(msg(mkCommand, cQuit))
+          break
+      else:
+        break
+    sleep(UITick) # getKey is nonblocking
 
 proc clearDelay(arg: tuple[bus: ptr Chan[Message]; level: Natural]) {.thread.} =
   arg.bus[].send(msg(mkCommand, cClearDelay)) # =pause
@@ -366,10 +374,12 @@ proc main(state: sink State) =
   var
     updateDue = false
     msg: Message
-    bus = newChan[Message]() # Create a shared channel
+    bus {.global.} = newChan[Message]() # Create a shared channel
     thInput: Thread[(ptr Chan[Message], ptr Options, ptr Atomic[bool])]
     thTicker: Thread[(ptr Chan[Message], ptr Atomic[int], ptr Atomic[bool])]
     thDelay: Thread[(ptr Chan[Message], Natural)]
+
+  setControlCHook(proc(){.noconv.} = bus.send(msg(mkCommand, cQuit)))
 
   # Spawn threads
   thTicker.createThread(ticker, (addr bus, addr state.descendPeriod, addr state.gameOver))
@@ -383,7 +393,7 @@ proc main(state: sink State) =
             of cPause: # pause publicly
               state.paused = not state.paused
               if state.paused:
-                displayMsg("Paused. Press 'P' or 'Esc' to continue...")
+                displayMsg(&"Paused. Press any of {{{state.opts.kbdPreset.Pause}}} to continue...")
             of cClearDelay: # pause privately
               state.paused = not state.paused
             of cHold:
@@ -441,7 +451,7 @@ proc main(state: sink State) =
         refreshStatus(state.nextT, state.heldT, state.stats, state.opts)
         updateDue = false
 
-      sleep(33) # ui tick
+      sleep(UITick) # ui tick
   if state.gameOver.load():
     displayMsg(&"Game Over! Final{state.stats} \n\r{state.opts}")
     when defined(windows):
@@ -452,7 +462,8 @@ proc main(state: sink State) =
         bus.recv(msg)
         if msg.kind == mkCommand and msg.command == cQuit:
           break
-  thTicker.joinThread() # can't join thInput blocked on user input
+  thTicker.joinThread()
+  thInput.joinThread()
 
 proc initState(opts: sink Options, charset: sink string): State =
   var tetros = nextTetronimo
@@ -471,12 +482,7 @@ proc initState(opts: sink Options, charset: sink string): State =
 proc tetronimia(speedcurve: SpeedCurveKind = scNimia; rotation: RotationDir = CW;
     nohdrop: bool = false, noghost: bool = false, holdbox: bool = false,
     nolcdelay: bool = false, nodropreward: bool = false, nocolor: bool = false;
-    charset = "", gameseed = "") =
-  proc safelyQuit() {.noconv.} =
-    resetAttributes()
-    deinit()
-    quit(0)
-
+    charset = "", gameseed = "", kbd: KbdPreset = KbdPresetVim) =
   var opts: Options
   opts.speedCurve = speedcurve
   opts.rotation = rotation
@@ -486,14 +492,23 @@ proc tetronimia(speedcurve: SpeedCurveKind = scNimia; rotation: RotationDir = CW
   opts.delayOnClear = not nolcdelay
   opts.scoreDrops = not nodropreward
   opts.color = not nocolor
+  opts.kbdPreset = kbd
   opts.seed = if gameseed != "": deserialize(gameseed)
               else: genSeed()
   randomize(opts.seed)
-  setControlCHook(safelyQuit) # necessary for Windows
+  illwillInit(fullscreen=false, mouse=false)
   main(initState(opts, charset))
-  safelyQuit()
 
 when isMainModule:
+  addExitProc(illwillDeinit)
+
+  proc argParse(dst: var KbdPreset; dfl: KbdPreset; a: var ArgcvtParams): bool =
+    dst = a.val.parseKbdPreset()
+    return true
+
+  proc argHelp(dfl: KbdPreset; a: var ArgcvtParams): seq[string] =
+    argHelp($dfl, a)
+
   clCfg.hTabCols = @[clOptKeys, clDescrip] # hide types and default value columns
   clCfg.version = NimblePkgVersion
   dispatch(tetronimia, help = HelpS, short = ShortS, doc = DocS)

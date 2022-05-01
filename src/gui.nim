@@ -70,7 +70,3 @@ proc uiInit*(field: sink Field, charset: string): UI =
   result.update(field)
   for l in 0..<Lines: echo("") # refresh moves cursor up, preparing blank space here
   result.refresh()
-
-proc deinit*() =
-  setCursorXPos(0)
-  showCursor()
